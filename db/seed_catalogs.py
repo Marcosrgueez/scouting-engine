@@ -33,54 +33,73 @@ POSITIONS = [
 ]
 
 # --- stat_types -----------------------------------------------------------
-# (code Sportmonks, label ES, category, valid_for)
-# category: participacion | pase | creacion | finalizacion | duelo | regate
-#           | defensa | disciplina | posesion | porteria
-# valid_for: 'all' salvo las 3 de porteria (saves, goals-conceded,
-#            cleansheets) -> 'goalkeeper_only'. saves siempre es 0 para
-#            jugadores de campo, no tiene sentido imputarlo.
+# (code Sportmonks, label ES, category, valid_for, normalization, direction)
+#
+# category:      participacion | pase | creacion | finalizacion | duelo |
+#               regate | defensa | disciplina | posesion | porteria
+# valid_for:     'all' salvo las 3 de porteria (saves, goals-conceded,
+#               cleansheets) -> 'goalkeeper_only'.
+# normalization: como se lleva la metrica a algo comparable (Fase 3):
+#   'per90' -> (valor / minutos) * 90. Para todos los CONTADORES.
+#   'raw'   -> el valor tal cual. Para % (accurate-passes-percentage) y
+#              para el rating (que ya es una media 0-10).
+#   'none'  -> NO entra en el calculo de percentiles. minutes-played es el
+#              propio umbral; appearances es disponibilidad, no rendimiento.
+# direction:     para orientar el percentil guardado (100 = mejor SIEMPRE):
+#   'higher_better' por defecto; 'lower_better' para lo que penaliza
+#   (tarjetas, faltas, perdidas, ser regateado, fueras de juego, grandes
+#   ocasiones falladas, goles encajados).
 STAT_TYPES = [
-    # --- STAT_FIELD_MAP (ya usados en el experimento) ---
-    ("appearances", "apariciones", "participacion", "all"),
-    ("minutes-played", "minutos jugados", "participacion", "all"),
-    ("rating", "rating medio", "participacion", "all"),
-    ("goals", "goles", "finalizacion", "all"),
-    ("assists", "asistencias", "creacion", "all"),
-    ("shots-total", "tiros totales", "finalizacion", "all"),
-    ("shots-on-target", "tiros a puerta", "finalizacion", "all"),
-    ("passes", "pases totales", "pase", "all"),
-    ("key-passes", "pases clave", "creacion", "all"),
-    ("accurate-passes-percentage", "precision de pases (%)", "pase", "all"),
-    ("tackles", "entradas", "defensa", "all"),
-    ("interceptions", "intercepciones", "defensa", "all"),
-    ("duels-won", "duelos ganados", "duelo", "all"),
-    ("successful-dribbles", "regates exitosos", "regate", "all"),
-    ("yellowcards", "tarjetas amarillas", "disciplina", "all"),
-    ("redcards", "tarjetas rojas", "disciplina", "all"),
-    ("saves", "paradas", "porteria", "goalkeeper_only"),
-    ("goals-conceded", "goles encajados", "porteria", "goalkeeper_only"),
-    ("cleansheets", "porteria a cero", "porteria", "goalkeeper_only"),
-    # --- STAT_FIELD_MAP_EXTRA (metricas nuevas medidas en la ultima pasada) ---
-    ("fouls", "faltas cometidas", "disciplina", "all"),
-    ("fouls-drawn", "faltas recibidas", "duelo", "all"),
-    ("dispossessed", "perdidas de posesion", "posesion", "all"),
-    ("shots-blocked", "tiros propios bloqueados", "finalizacion", "all"),
-    ("blocked-shots", "tiros rivales bloqueados", "defensa", "all"),
-    ("total-crosses", "centros totales", "pase", "all"),
-    ("accurate-crosses", "centros precisos", "pase", "all"),
-    ("aeriels-won", "duelos aereos ganados", "duelo", "all"),
-    ("dribble-attempts", "regates intentados", "regate", "all"),
-    ("dribbled-past", "regateado (superado)", "defensa", "all"),
-    ("long-balls", "balones largos", "pase", "all"),
-    ("long-balls-won", "balones largos ganados", "pase", "all"),
-    ("through-balls", "pases al hueco", "creacion", "all"),
-    ("through-balls-won", "pases al hueco exitosos", "creacion", "all"),
-    ("big-chances-created", "grandes ocasiones creadas", "creacion", "all"),
-    ("big-chances-missed", "grandes ocasiones falladas", "finalizacion", "all"),
-    ("clearances", "despejes", "defensa", "all"),
-    ("offsides", "fueras de juego", "finalizacion", "all"),
-    ("hit-woodwork", "al palo", "finalizacion", "all"),
-    ("penalties", "penaltis", "finalizacion", "all"),
+    # code, label, category, valid_for, normalization, direction
+    # --- participacion (no entran en percentiles) ---
+    ("appearances", "apariciones", "participacion", "all", "none", "higher_better"),
+    ("minutes-played", "minutos jugados", "participacion", "all", "none", "higher_better"),
+    ("rating", "rating medio", "participacion", "all", "raw", "higher_better"),
+    # --- finalizacion ---
+    ("goals", "goles", "finalizacion", "all", "per90", "higher_better"),
+    ("shots-total", "tiros totales", "finalizacion", "all", "per90", "higher_better"),
+    ("shots-on-target", "tiros a puerta", "finalizacion", "all", "per90", "higher_better"),
+    ("shots-blocked", "tiros propios bloqueados", "finalizacion", "all", "per90", "higher_better"),
+    ("big-chances-missed", "grandes ocasiones falladas", "finalizacion", "all", "per90", "lower_better"),
+    ("offsides", "fueras de juego", "finalizacion", "all", "per90", "lower_better"),
+    ("hit-woodwork", "al palo", "finalizacion", "all", "per90", "higher_better"),
+    ("penalties", "penaltis (total)", "finalizacion", "all", "per90", "higher_better"),
+    # --- creacion ---
+    ("assists", "asistencias", "creacion", "all", "per90", "higher_better"),
+    ("key-passes", "pases clave", "creacion", "all", "per90", "higher_better"),
+    ("big-chances-created", "grandes ocasiones creadas", "creacion", "all", "per90", "higher_better"),
+    ("through-balls", "pases al hueco", "creacion", "all", "per90", "higher_better"),
+    ("through-balls-won", "pases al hueco exitosos", "creacion", "all", "per90", "higher_better"),
+    # --- pase ---
+    ("passes", "pases totales", "pase", "all", "per90", "higher_better"),
+    ("accurate-passes-percentage", "precision de pases (%)", "pase", "all", "raw", "higher_better"),
+    ("total-crosses", "centros totales", "pase", "all", "per90", "higher_better"),
+    ("accurate-crosses", "centros precisos", "pase", "all", "per90", "higher_better"),
+    ("long-balls", "balones largos", "pase", "all", "per90", "higher_better"),
+    ("long-balls-won", "balones largos ganados", "pase", "all", "per90", "higher_better"),
+    # --- defensa ---
+    ("tackles", "entradas", "defensa", "all", "per90", "higher_better"),
+    ("interceptions", "intercepciones", "defensa", "all", "per90", "higher_better"),
+    ("blocked-shots", "tiros rivales bloqueados", "defensa", "all", "per90", "higher_better"),
+    ("clearances", "despejes", "defensa", "all", "per90", "higher_better"),
+    ("dribbled-past", "regateado (superado)", "defensa", "all", "per90", "lower_better"),
+    # --- duelo ---
+    ("duels-won", "duelos ganados", "duelo", "all", "per90", "higher_better"),
+    ("aeriels-won", "duelos aereos ganados", "duelo", "all", "per90", "higher_better"),
+    ("fouls-drawn", "faltas recibidas", "duelo", "all", "per90", "higher_better"),
+    # --- regate ---
+    ("successful-dribbles", "regates exitosos", "regate", "all", "per90", "higher_better"),
+    ("dribble-attempts", "regates intentados", "regate", "all", "per90", "higher_better"),
+    # --- disciplina ---
+    ("yellowcards", "tarjetas amarillas", "disciplina", "all", "per90", "lower_better"),
+    ("redcards", "tarjetas rojas", "disciplina", "all", "per90", "lower_better"),
+    ("fouls", "faltas cometidas", "disciplina", "all", "per90", "lower_better"),
+    # --- posesion ---
+    ("dispossessed", "perdidas de posesion", "posesion", "all", "per90", "lower_better"),
+    # --- porteria (solo porteros) ---
+    ("saves", "paradas", "porteria", "goalkeeper_only", "per90", "higher_better"),
+    ("goals-conceded", "goles encajados", "porteria", "goalkeeper_only", "per90", "lower_better"),
+    ("cleansheets", "porteria a cero", "porteria", "goalkeeper_only", "per90", "higher_better"),
 ]
 
 
@@ -100,10 +119,11 @@ def seed_stat_types(session):
     existing = session.scalar(select(StatType).limit(1))
     if existing is not None:
         return 0
-    for code, label, category, valid_for in STAT_TYPES:
+    for code, label, category, valid_for, normalization, direction in STAT_TYPES:
         session.add(StatType(
-            code=code, label=label, category=category,
-            valid_for=valid_for, source_provider="sportmonks",
+            code=code, label=label, category=category, valid_for=valid_for,
+            normalization=normalization, direction=direction,
+            source_provider="sportmonks",
         ))
     session.flush()
     return len(STAT_TYPES)

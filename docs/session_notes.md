@@ -316,3 +316,109 @@ según el corte (minutos = suma de `minutes-played` de todas sus etapas):
   entrar en percentiles por bucket (no tienen posición).
 
 Decisión del umbral: en el siguiente prompt.
+
+---
+
+## 2026-08-30 (noche) — Fase 3: normalización per-90 + percentiles por posición
+
+**Qué es esto.** Convertir las estadísticas crudas cargadas en Fase 2 en
+algo comparable entre jugadores: valor por 90 minutos, y percentil dentro
+del bucket de posición. Es el paso previo al Player Role Score (Fase 4).
+
+**Decisión de diseño (consultada): tabla `player_percentiles` poblada por
+función parametrizada, NO vista materializada.** Motivo principal: el
+umbral de minutos tiene que ser un parámetro revisable, y una matview lo
+cocería en su definición. Además permite recálculo scoped por
+liga/temporada cuando escale.
+
+**Umbral de minutos = 900** (10 partidos completos, convención estándar).
+Vive como parámetro de `analysis.percentiles.recompute(min_minutes=900)` /
+`--min-minutes`, no como constante ni columna de config. Se guarda en cada
+fila como `min_minutes` solo por provenance.
+
+**Cambios de esquema (`db/models.py`):**
+- `stat_types` +2 columnas: `normalization` (`per90`/`raw`/`none`) y
+  `direction` (`higher_better`/`lower_better`).
+- Nueva tabla `player_percentiles`: (player_id, season_id, competition_id,
+  stat_type_id, position_bucket, metric_value, percentile, pool_size,
+  min_minutes, computed_at). Unique (player_id, season_id, stat_type_id).
+  `ON DELETE CASCADE` desde players.
+
+**Qué se convierte a per90 y qué no** (en `stat_types.normalization`):
+- **`per90` (35 stat_types)** — todos los contadores: goles, asistencias,
+  tiros, entradas, intercepciones, pases, centros, despejes, duelos,
+  regates, faltas, tarjetas, balones largos, grandes ocasiones, saves,
+  goles encajados, porterías a cero, etc.
+- **`raw` (2)** — `accurate-passes-percentage` (ya es un %) y `rating`
+  (media 0-10). Entre etapas de un multi-equipo se hace **media ponderada
+  por minutos**, no suma. Verificado con Danjuma: Girona 6.84 (1336') +
+  Villarreal 7.14 (203') → 6.88. ✓
+- **`none` (2)** — `minutes-played` (es el propio umbral) y `appearances`
+  (disponibilidad, no rendimiento). No entran en el cálculo.
+
+**Percentil**: `PERCENT_RANK` dentro de
+`(season, competition, position_bucket, stat_type)`, sobre jugadores con
+≥900 min, **orientado** con `direction` → **100 = mejor de su bucket
+siempre** (para `lower_better` como tarjetas/pérdidas/goles-encajados se
+invierte a `1 - percent_rank`). Ceros imputados cuentan como 0.
+`goals-conceded`/`cleansheets`/`saves` (`goalkeeper_only`) solo dentro del
+bucket portero.
+
+**Jugadores en el cálculo final (336, de los 339 con ≥900 min; 3 quedan
+fuera por no tener posición):**
+
+| bucket | jugadores | filas | métricas |
+|---|---|---|---|
+| portero | 24 | 888 | 37 (34 + 3 solo-portero) |
+| central | 63 | 2142 | 34 |
+| lateral | 57 | 1938 | 34 |
+| centrocampista | 96 | 3264 | 34 |
+| extremo | 53 | 1802 | 34 |
+| delantero | 43 | 1462 | 34 |
+| **TOTAL** | **336** | **11 496** | |
+
+Idempotente (2 pasadas → 11 496 filas idénticas). ~0.5 s. `player_percentiles`
+tiene `percentile` en [0,100], sin nulos, sin fuera de rango.
+
+**Sanity check — tiene sentido futbolístico:**
+
+| jugador | métrica | valor/90 | percentil | ¿ok? |
+|---|---|---|---|---|
+| Mbappé (del) | goles | 0.96 | **98** | ✓ |
+| Mbappé | regates exitosos | 2.47 | **100** | ✓ |
+| Mbappé | grandes ocasiones falladas (lower_better) | 0.96 | **2** | ✓ falla muchas |
+| Lewandowski (del) | goles | 0.91 | 93 | ✓ |
+| Pedri (medio) | pases clave | 2.14 | 94 | ✓ |
+| Pedri | pases | 82.9 | 97 | ✓ |
+| Pedri | pérdidas (lower_better) | 1.15 | 22 | ✓ pierde bastante |
+| Lamine Yamal (ext) | asistencias | 0.44 | **100** | ✓ |
+| Lamine Yamal | regates exitosos | 4.84 | **100** | ✓ |
+| Unai Simón (por) | goles encajados (lower_better) | 0.62 | **100** | ✓ Athletic encajó poco |
+| Unai Simón | porterías a cero | 0.48 | 96 | ✓ |
+
+**Caveats confirmados (NO son bugs — límites del dato de temporada crudo):**
+1. **Volumen defensivo por-90 infravalora a centrales de equipos
+   dominadores.** Rüdiger sale en percentil 2-8 en entradas /
+   intercepciones / duelos ganados, no porque sea mal defensor sino
+   porque el Madrid tiene el balón y el rival casi no llega a su zona.
+   Ajuste por posesión = mejora futura (Fase 4 lo mitiga con pesos, pero
+   no lo arregla del todo).
+2. **`saves` per-90 de un portero depende de los tiros que recibe.** Unai
+   Simón sale bajo en paradas (9º percentil) porque el Athletic defendía
+   bien, no porque pare mal. Sin "tiros a puerta recibidos" no hay % de
+   paradas. `goals-conceded` y `cleansheets` sí son informativos.
+3. **PERCENT_RANK amontona empates en los extremos.** ~20 % de las filas
+   están exactamente en 0 o 100 — sobre todo métricas irrelevantes para
+   la posición (goles de un central → muchos empatados a 0 → todos
+   percentil 0) y `lower_better` donde casi todos tienen 0 (rojas → casi
+   todos percentil 100). Es comportamiento estándar de PERCENT_RANK; los
+   pesos de Fase 4 sobre métricas relevantes esquivan el problema.
+
+**Código nuevo:** `analysis/` (paquete nuevo para cálculos derivados) con
+`analysis/percentiles.py`. `db/seed_catalogs.py` reescrito con las 2
+columnas nuevas. `db/models.py` +1 tabla +2 columnas.
+
+**Pendientes (Fase 4+):** Player Role Score con pesos (siguiente prompt,
+`docs/roles_fase4_mapping.md` ya tiene el mapa rol→campos); ajuste por
+posesión para stats defensivas; % de paradas si algún día hay tiros
+recibidos; Alembic.

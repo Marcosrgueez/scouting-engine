@@ -1,4 +1,4 @@
-"""Modelos SQLAlchemy del motor de scouting (Fase 1).
+"""Modelos SQLAlchemy del motor de scouting.
 
 Esquema pensado para:
   - guardar estadisticas de jugador-temporada de Sportmonks (fuente unica,
@@ -8,10 +8,12 @@ Esquema pensado para:
   - marcar los ceros que Sportmonks omite y que se imputan al cargar
     (player_statistics.is_imputed_zero),
   - marcar las stats que solo son validas para porteros
-    (stat_types.valid_for = 'goalkeeper_only').
+    (stat_types.valid_for = 'goalkeeper_only'),
+  - Fase 3: percentiles por bucket de posicion -> tabla player_percentiles.
 
 Catalogos: competitions, seasons, teams, positions, stat_types.
 Entidades: players, player_team_season, player_statistics.
+Derivado (Fase 3): player_percentiles.
 """
 
 from __future__ import annotations
@@ -22,12 +24,14 @@ from typing import Optional
 from sqlalchemy import (
     CheckConstraint,
     Date,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
     Numeric,
     String,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,6 +40,14 @@ from db.database import Base
 POSITION_BUCKETS = ("portero", "central", "lateral", "centrocampista", "extremo", "delantero")
 POSITION_SIDES = ("izquierda", "derecha", "centro", "desconocido")
 STAT_VALID_FOR = ("all", "goalkeeper_only")
+# Como se normaliza la metrica antes de calcular percentiles (Fase 3):
+#   per90 = (valor / minutos) * 90   -> contadores
+#   raw   = el valor tal cual         -> ya es %, o una media (rating)
+#   none  = no entra en el calculo de percentiles (minutos, apariciones)
+STAT_NORMALIZATION = ("per90", "raw", "none")
+# Sentido de la metrica. Se usa para orientar el percentil guardado de
+# forma que percentil alto = mejor rendimiento SIEMPRE.
+STAT_DIRECTION = ("higher_better", "lower_better")
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +109,8 @@ class StatType(Base):
     __tablename__ = "stat_types"
     __table_args__ = (
         CheckConstraint(f"valid_for IN {STAT_VALID_FOR}", name="ck_stat_types_valid_for"),
+        CheckConstraint(f"normalization IN {STAT_NORMALIZATION}", name="ck_stat_types_normalization"),
+        CheckConstraint(f"direction IN {STAT_DIRECTION}", name="ck_stat_types_direction"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -105,6 +119,8 @@ class StatType(Base):
     label: Mapped[str] = mapped_column(String(80), nullable=False)
     category: Mapped[str] = mapped_column(String(30), nullable=False)
     valid_for: Mapped[str] = mapped_column(String(20), nullable=False, default="all")
+    normalization: Mapped[str] = mapped_column(String(10), nullable=False, default="per90")
+    direction: Mapped[str] = mapped_column(String(15), nullable=False, default="higher_better")
     source_provider: Mapped[str] = mapped_column(String(20), nullable=False, default="sportmonks")
 
 
@@ -197,4 +213,48 @@ class PlayerStatistic(Base):
     is_imputed_zero: Mapped[bool] = mapped_column(nullable=False, default=False)
 
     player_team_season: Mapped["PlayerTeamSeason"] = relationship(back_populates="statistics")
+    stat_type: Mapped["StatType"] = relationship()
+
+
+# ---------------------------------------------------------------------------
+# Derivado (Fase 3)
+# ---------------------------------------------------------------------------
+
+class PlayerPercentile(Base):
+    """Percentil de un jugador para una metrica, dentro de su bucket de
+    posicion y su liga+temporada.
+
+    La puebla analysis/percentiles.py de forma idempotente. NO se calcula
+    para jugadores por debajo del umbral de minutos (parametro del
+    recalculo, NO columna de config): esos simplemente no tienen filas
+    aqui.
+
+    `percentile` esta orientado: 100 = mejor de su bucket para esa metrica
+    (ya aplicado stat_types.direction). `metric_value` es el valor que se
+    ranqueo (per90 o raw). `min_minutes` es provenance: con que umbral se
+    calculo esta fila.
+    """
+
+    __tablename__ = "player_percentiles"
+    __table_args__ = (
+        UniqueConstraint("player_id", "season_id", "stat_type_id", name="uq_player_percentile"),
+        Index("ix_pctl_bucket_stat", "season_id", "competition_id", "position_bucket", "stat_type_id"),
+        Index("ix_pctl_player", "player_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False)
+    season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"), nullable=False)
+    competition_id: Mapped[Optional[int]] = mapped_column(ForeignKey("competitions.id"))
+    stat_type_id: Mapped[int] = mapped_column(ForeignKey("stat_types.id"), nullable=False)
+    position_bucket: Mapped[str] = mapped_column(String(20), nullable=False)
+    metric_value: Mapped[float] = mapped_column(Numeric(14, 4), nullable=False)
+    percentile: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
+    pool_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    min_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    computed_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    player: Mapped["Player"] = relationship()
     stat_type: Mapped["StatType"] = relationship()
