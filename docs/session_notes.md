@@ -272,3 +272,47 @@ sesión. El commit de Fase 2 queda en esa rama. Para traerlo a `master`
 - `date_from`/`date_to` de `player_team_season`: columnas creadas pero sin
   poblar; si se quisieran, están en `/players/{id}?include=transfers`.
 - Segunda División: segunda pasada del mismo ETL con otro `season_id`.
+
+---
+
+## 2026-08-30 (cierre Fase 2) — merge a master + datos para elegir umbral de minutos
+
+**1. Merge.** El trabajo de Fase 2 ya está en `master` (fue un
+fast-forward de `worktree-fase2-etl`, hecho la sesión anterior):
+`820eb3d` (chore: desactivar guard de worktree) + `0e755ff` (Fase 2 ETL)
+sobre `365a108` (Fase 1). Working tree limpio. Rama del worktree borrada,
+`.claude/worktrees/fase2-etl/` eliminado del disco. Queda un
+`.git/worktrees/fase2-etl/` (metadatos obsoletos) que OneDrive tiene
+bloqueado — inocuo (`git worktree list` ya no lo muestra); se limpia solo
+en el próximo `git worktree prune` cuando suelte el lock.
+**Aviso: OneDrive está sincronizando `.git/` — conviene excluir esa
+carpeta de OneDrive; sincronizar un repo git puede corromperlo.**
+
+**2. Umbral de minutos — datos, decisión PENDIENTE.** El "900 min" de la
+query de verificación de Fase 2 fue solo un ejemplo, NO un umbral elegido.
+En Fase 4 se anotó "600, tentativo". Jugadores dentro/fuera por bucket
+según el corte (minutos = suma de `minutes-played` de todas sus etapas):
+
+| bucket | total | >=600 | >=750 | >=900 | mediana min |
+|---|---|---|---|---|---|
+| portero | 94 | 28 | 24 | 24 | 0 |
+| central | 130 | 76 | 69 | 63 | 870 |
+| lateral | 113 | 68 | 63 | 57 | 910 |
+| centrocampista | 180 | 108 | 101 | 96 | 1016 |
+| extremo | 123 | 61 | 57 | 53 | 597 |
+| delantero | 88 | 57 | 47 | 43 | 860 |
+| (sin posición) | 34 | 3 | 3 | 3 | 0 |
+| **TOTAL** | **762** | **401** | **364** | **339** | — |
+
+176 jugadores tienen 0 minutos. Observaciones para decidir en Fase 3:
+- **Porteros:** caída brutal (28/94 a >=600, y ya no baja más a 900). El
+  pool de porteros con minutos es inherentemente ~24-28; puede necesitar
+  umbral propio o asumir muestra pequeña.
+- **Extremos:** mediana 597, justo en la línea de 600. Es la posición que
+  más sufre cualquier corte (rotan mucho): 61->53 de 600 a 900.
+- **Delanteros:** 57->43 de 600 a 900 (-25 %). También rotación alta.
+- **Centrocampistas:** los más robustos (mediana 1016), 108->96.
+- **(sin posición):** solo 3 pasan cualquier corte; además no pueden
+  entrar en percentiles por bucket (no tienen posición).
+
+Decisión del umbral: en el siguiente prompt.
