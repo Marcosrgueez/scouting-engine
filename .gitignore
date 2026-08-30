@@ -29,3 +29,6 @@ data/
 Thumbs.db
 .idea/
 .vscode/
+
+# --- Claude Code: worktrees temporales (settings.json SI se versiona) ---
+.claude/worktrees/
