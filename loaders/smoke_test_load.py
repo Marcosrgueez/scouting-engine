@@ -228,7 +228,9 @@ def main():
                      [teams_by_sm_id.get(s.get("team_id"), {}).get("name") for s in statistics])
                 )
 
-            for stat_entry in statistics:
+            for order_in_season, stat_entry in enumerate(
+                sorted(statistics, key=lambda e: e.get("team_id") or 0)
+            ):
                 team = _get_or_create_team(
                     session, teams_by_sm_id, team_cache, competition, stat_entry.get("team_id")
                 )
@@ -237,6 +239,7 @@ def main():
                     team_id=team.id,
                     season_id=season.id,
                     competition_id=competition.id,
+                    order_in_season=order_in_season,
                     date_from=None,
                     date_to=None,
                 )

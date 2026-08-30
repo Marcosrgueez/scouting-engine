@@ -134,15 +134,20 @@ class Player(Base):
 class PlayerTeamSeason(Base):
     """Una etapa de un jugador en un equipo dentro de una temporada.
 
-    El constraint unico incluye date_from para permitir que un jugador
-    tenga 2+ filas en la misma temporada (p.ej. cedido en enero): mismo
-    player_id + season_id, distinto team_id y/o date_from.
+    Un jugador puede tener varias filas en la misma temporada (cesion /
+    traspaso dentro de la liga). Se numeran con `order_in_season` (0, 1,
+    2...) por jugador-temporada, y el constraint unico va sobre
+    (player_id, season_id, order_in_season). Se descarto usar `date_from`
+    en el constraint porque Sportmonks no da fechas de etapa fiables y en
+    Postgres `NULL != NULL` no desduplicaria. `date_from` / `date_to`
+    quedan como columnas opcionales para rellenar mas adelante si hiciera
+    falta.
     """
 
     __tablename__ = "player_team_season"
     __table_args__ = (
         UniqueConstraint(
-            "player_id", "team_id", "season_id", "date_from",
+            "player_id", "season_id", "order_in_season",
             name="uq_player_team_season",
         ),
         Index("ix_pts_player_id", "player_id"),
@@ -154,6 +159,8 @@ class PlayerTeamSeason(Base):
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"), nullable=False)
     season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"), nullable=False)
     competition_id: Mapped[Optional[int]] = mapped_column(ForeignKey("competitions.id"))
+    # 0 = primera (o unica) etapa del jugador en la temporada, 1 = segunda...
+    order_in_season: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     date_from: Mapped[Optional[datetime.date]] = mapped_column(Date)
     date_to: Mapped[Optional[datetime.date]] = mapped_column(Date)
 
@@ -177,8 +184,10 @@ class PlayerStatistic(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # ON DELETE CASCADE: al reescribir las etapas de un jugador en el ETL
+    # idempotente se borra su player_team_season y sus stats se van con el.
     player_team_season_id: Mapped[int] = mapped_column(
-        ForeignKey("player_team_season.id"), nullable=False
+        ForeignKey("player_team_season.id", ondelete="CASCADE"), nullable=False
     )
     stat_type_id: Mapped[int] = mapped_column(ForeignKey("stat_types.id"), nullable=False)
     value: Mapped[float] = mapped_column(Numeric(12, 3), nullable=False)

@@ -159,3 +159,116 @@ etapa) a la clave única de `player_team_season` para evitar el problema de
 `NULL != NULL`. Como el dato existe, la propuesta pasa a ser: usar los
 transfers para las fechas y añadir igualmente `order_in_season` como
 respaldo / desempate.
+
+---
+
+## 2026-08-30 (noche) — Fase 2: ETL masivo del roster de LaLiga
+
+**Qué es esto.** El ETL que carga el roster completo de LaLiga 2024/25 en
+PostgreSQL, reutilizando el JSON ya descargado en Fase 0
+(`../data-experiment/raw_data/sportmonks/`, 762 jugadores) sin volver a
+pedir a la API. Es el paso previo a poder calcular percentiles (Fase 3).
+
+**Decisiones de entrada (venían del prompt, no se reabrieron):**
+- Reutilizar los datos ya descargados; solo llamar a la API para huecos
+  (`--fetch-missing`). No hubo huecos: 762/762 archivos presentes.
+- Solo LaLiga por ahora (Segunda será otra pasada del mismo pipeline).
+- `order_in_season` (entero por jugador-temporada) en vez de fechas reales
+  para el constraint único de `player_team_season`. **NO** se usó
+  `include=transfers`.
+
+**Cambios de esquema (`db/models.py`):**
+- Nueva columna `player_team_season.order_in_season` (int, NOT NULL,
+  default 0). El unique constraint pasa de `(player_id, team_id,
+  season_id, date_from)` a **`(player_id, season_id, order_in_season)`**.
+  `date_from`/`date_to` se quedan como columnas opcionales sin usar.
+- `player_statistics.player_team_season_id` ahora es
+  `ON DELETE CASCADE` (el ETL idempotente borra las etapas de un jugador y
+  reinserta; sin el cascade, la FK lo impedía).
+
+**Código nuevo:**
+- `loaders/schemas.py` — modelos Pydantic del JSON de Sportmonks
+  (`PlayerStatsFile` → `PlayerProfile` → `StatEntry` → `StatDetail`).
+  Doble función: valida la forma del dato y es el primer borrador del
+  mapper JSON→esquema. Un jugador que no valida se registra (agregado por
+  tipo de error) y se salta, no tumba el ETL. Probado: rechaza `data`
+  ausente, `id` ausente, jugador sin nombre, `team_id` ausente en una
+  etapa.
+- `loaders/sportmonks_mapping.py` — helpers compartidos (unwrap del
+  `value` dict de Sportmonks, `to_number`, `BASE_CODES`, construcción de
+  las filas de `player_statistics` con la lógica de imputación de ceros y
+  de solo-portero).
+- `loaders/etl_laliga.py` — el ETL. Upserts con `INSERT ... ON CONFLICT`
+  de Postgres (nada de INSERT ciego). Idempotente: cada jugador se
+  procesa "borrar sus `player_team_season` (cascade a stats) + reinsertar",
+  commits por lotes de 50. `--dry-run` hace rollback. Stats insertadas en
+  bloque por etapa (36s → 7s).
+- `loaders/smoke_test_load.py` — ajustado para poner `order_in_season`.
+
+**Resultado del dry-run** (14 jugadores del smoke test, y luego completo):
+idéntico al smoke test (14 jug, 15 etapas, 546 stats, 100 imputadas).
+Dry-run completo: 762 jug, 0 rechazados, 777 etapas, 27152 stats, 7s.
+
+**Resultado de la carga real completa:**
+| métrica | valor |
+|---|---|
+| jugadores objetivo | 762 |
+| cargados | **762** |
+| rechazados por validación | **0** |
+| jugadores sin ninguna etapa | 0 |
+| jugadores multi-etapa | **15** |
+| filas `player_team_season` | **777** (747 con 1 etapa, 15 con 2) |
+| filas `player_statistics` | **27 152** |
+| de ellas `is_imputed_zero=true` | **11 476** (~42 %) |
+| `team_ids` fuera de teams.json | 0 |
+| tiempo | ~7 s |
+
+**Idempotencia verificada:** relanzado 2 veces → conteos idénticos en la
+BD (762 / 777 / 27152 / 11476). Relanzable a media carga sin limpiar nada.
+
+**Verificado por SQL:**
+- Los 15 multi-etapa son reales (Danjuma Girona→Villarreal, Aleñá
+  Getafe→Alavés, Umar Sadiq Valencia→Real Sociedad, etc.), con
+  `order_in_season` 0 y 1 estable (ordenado por team_id).
+- `SUM ... GROUP BY player` agrega bien las 2 etapas (Danjuma 1539 min,
+  4 goles en la temporada).
+- 0 filas `goalkeeper_only` colgando de jugadores de campo.
+- Homónimos (Juan Cruz ×2, Dani Rodríguez ×2, Juanpe ×2, David López ×2)
+  entran como jugadores distintos por `sportmonks_player_id` — el esquema
+  los separa bien (unique por id de proveedor, no por nombre).
+- Consulta con forma de Fase 3 ("goles/90 por bucket, mín 900 min"):
+  Sørloth 1.15, Mbappé 0.96, Lewandowski 0.91... realista.
+
+**Ajustes sobre la marcha (contados, no en silencio):**
+1. **`ON DELETE CASCADE`** en `player_statistics` — el primer intento de
+   relanzar el ETL petó con `ForeignKeyViolation` al borrar
+   `player_team_season`. Añadido el cascade a nivel de BD.
+2. **Inserts de stats en bloque** — la primera versión hacía ~27k
+   `execute()` individuales (36 s). Pasado a un `INSERT` multi-fila por
+   etapa (7 s).
+3. **Resolución de `DATA_EXPERIMENT_DIR`** — desde el worktree, la ruta
+   relativa `../data-experiment` no resolvía. El ETL ahora sube
+   directorios buscando un hermano `data-experiment/` (funciona desde el
+   checkout normal y desde el worktree).
+
+**34 jugadores quedan con `primary_position_id` NULL** — son los que no
+tienen `detailed_position_id` en Sportmonks (ya lo sabíamos de Fase 0).
+Casi todos de poco minutaje.
+
+**Guard de git / worktree.** Trabajé en un **worktree**
+(`.claude/worktrees/fase2-etl`, rama `worktree-fase2-etl`) porque intentar
+desactivar el guard con `.claude/settings.json` no lo desactivó a mitad de
+sesión. El commit de Fase 2 queda en esa rama. Para traerlo a `master`
+(fast-forward, sin conflictos, sale de HEAD de master):
+`git merge --ff-only worktree-fase2-etl` desde el checkout principal.
+
+### Pendientes que siguen abiertos (Fase 3+ / mantenimiento)
+
+- Resolver IDs de Sportmonks a nombres: país (`players.nationality`,
+  `teams.country` — hoy guardan el id como texto o NULL).
+- `players.preferred_foot`: sigue NULL (Sportmonks no lo da en este
+  include).
+- Alembic para migraciones (ahora `create_all()` + `--drop`).
+- `date_from`/`date_to` de `player_team_season`: columnas creadas pero sin
+  poblar; si se quisieran, están en `/players/{id}?include=transfers`.
+- Segunda División: segunda pasada del mismo ETL con otro `season_id`.

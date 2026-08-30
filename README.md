@@ -3,8 +3,9 @@
 Motor de scouting de fútbol. Código de producción del proyecto (el
 experimento de validación de datos vive aparte, en `../data-experiment/`).
 
-**Fase actual: 1 — esquema de PostgreSQL.** Todavía NO hay pipeline de
-carga masiva (Fase 2) ni cálculo de percentiles (Fase 3).
+**Fase actual: 2 — ETL del roster de LaLiga cargado en PostgreSQL.**
+Todavía NO hay cálculo de percentiles (Fase 3). Segunda División será una
+segunda pasada del mismo ETL cuando esté probado.
 
 ## Requisitos
 
@@ -30,8 +31,13 @@ Copy-Item .env.example .env
 python -m db.create_schema
 # (para empezar de cero: python -m db.create_schema --drop)
 
-# Smoke test: cargar los 13 jugadores de prueba ya validados:
+# Smoke test (Fase 1): cargar solo los 13 jugadores de prueba:
 python -m loaders.smoke_test_load
+
+# ETL masivo (Fase 2): cargar el roster completo de LaLiga.
+python -m loaders.etl_laliga --dry-run --limit 14   # prueba rapida
+python -m loaders.etl_laliga --dry-run              # dry-run completo (rollback)
+python -m loaders.etl_laliga                        # carga real (idempotente)
 ```
 
 ## Estructura
@@ -43,8 +49,29 @@ db/
   seed_catalogs.py   datos estáticos de positions y stat_types
   create_schema.py   create_all() + seed (sin Alembic todavía)
 loaders/
-  smoke_test_load.py carga puntual de 13 jugadores desde ../data-experiment
+  schemas.py            modelos Pydantic del JSON de Sportmonks (validacion + mapper)
+  sportmonks_mapping.py  helpers JSON -> esquema interno (compartidos)
+  smoke_test_load.py     Fase 1: carga puntual de 13 jugadores
+  etl_laliga.py          Fase 2: ETL masivo del roster, idempotente
 ```
+
+## ETL (`loaders/etl_laliga.py`)
+
+Reutiliza el JSON ya descargado en `../data-experiment/raw_data/sportmonks/`
+(no vuelve a pedir a la API salvo `--fetch-missing` para huecos puntuales).
+
+```
+player_stats/{id}.json
+  -> validacion Pydantic (loaders/schemas.py)   [si falla: log + skip]
+  -> upsert players            (ON CONFLICT sportmonks_player_id)
+  -> upsert player_team_season (ON CONFLICT player_id+season_id+order_in_season)
+  -> upsert player_statistics  (ON CONFLICT player_team_season_id+stat_type_id)
+```
+
+**Idempotente:** relanzarlo no duplica nada. Cada jugador se procesa
+"borrar sus etapas (cascade a sus stats) + reinsertar", con commits por
+lotes de 50, así que si se corta a la fila 400 se puede relanzar sin
+limpiar la BD.
 
 ## Esquema
 
@@ -58,8 +85,12 @@ Puntos de diseño que vienen del experimento de Fase 0
   por defecto `sportmonks`. `players.apifootball_player_id` se guarda solo
   como referencia cruzada.
 - **Multi-etapa:** `player_team_season` permite varias filas por
-  (jugador, temporada) — cesiones / traspasos dentro de la liga. Las stats
-  cuelgan de cada etapa; la agregación se hace con `SUM ... GROUP BY`.
+  (jugador, temporada) — cesiones / traspasos dentro de la liga.
+  Se numeran con `order_in_season` (0, 1, ...) y el unique constraint va
+  sobre `(player_id, season_id, order_in_season)`. Se descartó usar
+  `date_from` (Sportmonks no da fechas de etapa fiables; `NULL != NULL` en
+  el índice no desduplicaría). Las stats cuelgan de cada etapa; la
+  agregación se hace con `SUM ... GROUP BY`.
 - **Ceros omitidos:** Sportmonks no devuelve una estadística cuando vale 0.
   Al cargar se imputa `value = 0, is_imputed_zero = true` para que el
   cálculo de percentiles (Fase 3) no sobrestime a los jugadores flojos.
