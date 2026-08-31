@@ -3,11 +3,12 @@
 Motor de scouting de fútbol. Código de producción del proyecto (el
 experimento de validación de datos vive aparte, en `../data-experiment/`).
 
-**Fase actual: 8 — Tactical Fit Score.** Con esto se cierra el núcleo
-analítico (Fases 0-8). (Fases previas: 1 esquema, 2 ETL, 3 percentiles,
-5 Player Role Score, 6 Similarity Engine, 7 Team Style Profile.) Lo
-siguiente sería backend (FastAPI, Fase 9) y frontend (Fase 10). Segunda
-División será una segunda pasada del mismo ETL cuando escale.
+**Fase actual: 9 — API FastAPI.** Expone el núcleo analítico (Fases 0-8)
+por HTTP, sin auth, con Swagger en `/docs`. (Fases previas: 1 esquema,
+2 ETL, 3 percentiles, 5 Player Role Score, 6 Similarity Engine, 7 Team
+Style Profile, 8 Tactical Fit Score.) Lo siguiente es el frontend
+(Fase 10). Segunda División será una segunda pasada del mismo ETL cuando
+escale.
 
 ## Requisitos
 
@@ -70,6 +71,9 @@ python -m analysis.tactical_fit --player "Pedri" --role deep_lying_playmaker --e
 python -m analysis.tactical_fit --team "FC Barcelona" --role ball_winner --top 10
 python -m analysis.tactical_fit --player "Isco" --team "Osasuna" --by-formation --explain
 python -m analysis.tactical_fit --player "Rodri" --w-role 0.6 --w-style 0.4   # peso ajustable
+
+# API (Fase 9): expone todo lo anterior por HTTP.
+python -m uvicorn api.main:app --reload        # -> http://127.0.0.1:8000/docs
 ```
 
 ## Estructura
@@ -86,6 +90,12 @@ loaders/
   smoke_test_load.py     Fase 1: carga puntual de 13 jugadores
   etl_laliga.py          Fase 2: ETL masivo del roster, idempotente
   etl_team_fixtures.py   Fase 7: ETL de partidos (formaciones + stats de equipo), idempotente
+api/
+  main.py              Fase 9: FastAPI app, CORS, routers. Sin auth. Swagger en /docs
+  dependencies.py        sesion de DB por request
+  routers/               players, teams, roles, scouting
+  services/              llaman a analysis/ o consultan las tablas ya pobladas
+  schemas/               Pydantic de request/response (NO confundir con loaders/schemas.py)
 analysis/
   percentiles.py         Fase 3: per-90 + percentiles por bucket, idempotente
   role_scores.py         Fase 5: Player Role Score con pesos, idempotente
@@ -299,6 +309,46 @@ hardcodeado. Heurística explícita — sin datos de evento no hay forma de
   correlaciona con MENOS posesión — hereda el caveat de posesión de
   Fase 3. Advanced Playmaker y Ball Winner tienen un solo eje de estilo,
   así que su `style_compatibility` es ese único percentil.
+
+## API (`api/`)
+
+FastAPI que expone las Fases 1-8. **Sin autenticación.** Swagger en
+`/docs`, ReDoc en `/redoc`, esquema en `/openapi.json`. CORS abierto (`*`)
+porque el frontend (Fase 10) es un cliente aparte sin cookies.
+
+```powershell
+pip install -r requirements.txt          # añade fastapi + uvicorn
+python -m uvicorn api.main:app --reload   # http://127.0.0.1:8000/docs
+```
+
+**La API no reimplementa nada de `analysis/`.** `routers/` → `services/` →
+(módulos de `analysis/` o consultas a las tablas que esos módulos ya
+poblaron). El Tactical Fit se calcula **en vivo por request** (función de
+Fase 8), no se cachea.
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| GET | `/players` | Lista paginada (`offset`/`limit`/`total_count`). Filtros: `bucket`, `team_id`, `min_minutes` (900), `age_min`, `age_max`, `side`. |
+| GET | `/players/{id}` | Bio + equipo + bucket/lado + percentiles de su bucket. 404 si no existe; `percentiles: []` si < umbral de minutos. |
+| GET | `/players/{id}/similar` | Top-20 de `player_similarity` ya calculado. Filtros `age_max`/`side` **sobre el resultado** (rank conserva su número). |
+| GET | `/players/{id}/roles` | Role scores del jugador + desglose completo de `player_role_score_breakdown`. |
+| GET | `/teams` | Los 20 equipos. |
+| GET | `/teams/{id}/style` | Estilo por formación desde `team_style_axes`. Formaciones con < 5 partidos van en `formations_below_threshold` (nombre + nº, sin ejes) — ver decisión abajo. |
+| GET | `/roles` | Los 4 roles con `metric_weights` (Fase 5) y `style_weights` (Fase 8). |
+| POST | `/scouting/tactical-fit` | Body `{team_id, role_id, formation?}`. Ranking de jugadores por `score` desc con desglose. Formación sin muestra → 422 con la lista de formaciones disponibles. |
+
+**Errores:** 404 (id inexistente), 422 (Pydantic para body/query inválido;
+también para `formation`/`team_id` sin datos suficientes, con mensaje que
+explica qué falta y qué alternativas hay).
+
+**Decisión — formaciones bajo el umbral de 5 en `/teams/{id}/style`:** se
+**incluyen, marcadas como muestra insuficiente**, en un array aparte
+`formations_below_threshold` con solo `formation` + `n_matches` y **sin
+ejes de estilo**. Motivo: `team_style_axes` nunca las materializó (Fase 7
+filtra en la carga con `HAVING count(*) >= 5`), así que no hay percentiles
+que devolver; pero omitirlas del todo le ocultaría al frontend que el
+equipo también usó esas formaciones. El dato crudo sale de `team_fixtures`
+por `GROUP BY`, que es el patrón de acceso que la Fase 7 diseñó.
 
 ## Esquema
 

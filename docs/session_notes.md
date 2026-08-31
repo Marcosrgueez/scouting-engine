@@ -851,3 +851,89 @@ FastAPI (Fase 9), frontend (Fase 10); Alembic (11 tablas con `create_all`);
 2ª División como 2ª pasada del ETL; validación con ojeador; datos de evento
 si algún día se incorporan (desbloquean xG, presión real, Box-to-Box y
 Poacher plenos, Pressing Forward).
+
+## 2026-08-31 — Fase 9: API FastAPI
+
+Expone el núcleo analítico (Fases 1-8) por HTTP. **Solo backend** — nada de
+frontend (Fase 10).
+
+**Decisiones de entrada (del prompt, no reabiertas):** la API nunca
+reimplementa lógica de `analysis/`; alcance solo Fases 1-8 (nada de
+potencial ni "Replace Player" como endpoint); Tactical Fit en vivo por
+request; sin auth; Swagger activado.
+
+**Estructura (`api/`):**
+```
+api/
+  main.py            FastAPI app, CORS (*), monta routers, / y /health
+  dependencies.py    get_db (sesión por request) + AGE_REFERENCE_DATE 2025-05-25
+  routers/           players.py teams.py roles.py scouting.py  (thin: validan y delegan)
+  services/          players.py teams.py roles.py scouting.py  (queries + llamada a analysis/)
+  schemas/           players.py teams.py roles.py scouting.py  (Pydantic req/resp de la API)
+```
+`services/roles.py` no estaba en el esqueleto del prompt (listaba players/
+teams/scouting); se añadió para que `routers/roles.py` tenga su servicio
+simétrico. `requirements.txt` +`fastapi==0.115.0` +`uvicorn[standard]==0.30.6`.
+
+**Cómo la API no duplica `analysis/`:**
+- `/scouting/tactical-fit` → `analysis.tactical_fit.tactical_fit(db, ...)` tal cual.
+- `/players/{id}/similar`, `/roles`, `/players/{id}/roles`, `/players/{id}` (percentiles),
+  `/teams/{id}/style` → SELECT sobre las tablas que `role_scores.py` /
+  `similarity.py` / `percentiles.py` / `team_style.py` ya poblaron.
+- Lo único que se computa nuevo son agregaciones de acceso que ningún
+  módulo materializa: minutos totales por jugador (`SUM` de `minutes-played`),
+  equipo "actual" (`order_in_season` máx), edad (`age()` de Postgres a fin
+  de temporada), y `GROUP BY` sobre `team_fixtures` para las formaciones
+  bajo umbral — este último es el patrón de acceso que la Fase 7 diseñó.
+
+**8 endpoints, todos probados contra datos reales (uvicorn local):**
+
+| endpoint | comprobación |
+|---|---|
+| `GET /players?bucket=centrocampista` | total_count 96 (= pool de Fase 5) |
+| `GET /players?bucket=lateral&side=izquierda&age_max=25` | total_count 11, todos izquierda y ≤25 → filtros componen y el total refleja el filtro (paginación correcta) |
+| `GET /players/396` (Camavinga) | 34 percentiles; tackles/duels-won p100, interceptions p90.5 = Fase 5 |
+| `GET /players/396/roles` | ball_winner 90.12 (= Fase 5), DLP 67.17, AP 65.73 (= Fase 8), con breakdown |
+| `GET /players/328/similar` (Sergio Gómez) | top-5 = Fase 6 exacto (M. Gutiérrez, Koundé, L. Vázquez, Rațiu, Molina) |
+| `GET /players/328/similar?side=derecha` | solo derecha, ranks con huecos (2,3,4,5,6,9…) → **control de Fase 6: filtrando a un lado no aparece el contrario** |
+| `GET /teams/10/style` (Barça) | agregado: posesión p97.5, directitud p2.5, presión p2.5 (= Fase 8); by_formation 4-2-3-1 (29) + 4-3-3 (8); below_threshold 4-1-4-1 (1) |
+| `GET /roles` | 4 roles con metric_weights (tier+peso) y style_weights (DLP directness=negative) |
+| `POST /scouting/tactical-fit {11, 1}` | **Camavinga Ball Winner en Dep. Alavés (presión p97): FIT 92.33** — idéntico a la validación de Fase 8 |
+| `POST /scouting/tactical-fit {10, 1}` | Camavinga Ball Winner en Barça (presión p2): **FIT 63.83** — idéntico a Fase 8 |
+
+**Errores (probados):**
+- 404: `/players/99999`, `/teams/999/style`, tactical-fit con `role_id`/`team_id` inexistente.
+- 422 automático (Pydantic): body sin `role_id` → `loc: [body, role_id]`.
+- 422 con mensaje: tactical-fit con `formation:"5-3-2"` en Barça →
+  *"La formación '5-3-2' de 'FC Barcelona' no tiene muestra suficiente
+  (mínimo 5 partidos…). Formaciones con perfil: ['4-2-3-1', '4-3-3']…"*.
+- Jugador sub-900 (`/players/4`, Januzaj 597') → 200 con `percentiles: []`
+  y nota; `/players/4/similar` → `items: []` + nota. Delantero >900
+  (`/players/2/roles`, Iago Aspas) → `items: []` + nota (delantero no
+  tiene ninguno de los 4 roles).
+
+**Decisión — formaciones bajo el umbral de 5 en `/teams/{id}/style`:** se
+**incluyen, marcadas como muestra insuficiente**, en `formations_below_threshold`
+(solo `formation` + `n_matches`, sin ejes de estilo). `team_style_axes`
+nunca las materializó (Fase 7 filtra en la carga), así que no hay
+percentiles que dar; pero omitirlas ocultaría que el equipo también usó
+esas formaciones. Se leen de `team_fixtures` por `GROUP BY`.
+
+**Notas:**
+- CORS abierto (`allow_origins=["*"]`, `allow_credentials=False`) — el
+  frontend de Fase 10 es cliente aparte, sin cookies ni auth que proteger.
+- `/scouting/tactical-fit` devuelve TODO el ranking (hasta 216 jugadores,
+  ~68 KB para Ball Winner). Sin paginación: el prompt pide "el ranking",
+  y el frontend puede recortar. Si crece con más ligas, se añade `limit`.
+- Respuesta de percentiles/similar/roles: `Decimal` de la BD se convierte
+  a `float` en el servicio antes de serializar.
+
+**Arranque local:** `python -m uvicorn api.main:app --reload` →
+`http://127.0.0.1:8000/docs`.
+
+**Código nuevo:** `api/` (17 ficheros). `requirements.txt` +2 deps.
+README + sección "API".
+
+**Pendientes (Fase 10+):** frontend; "Replace Player" (Fase 11, reusará
+similar + tactical-fit); endpoints de potencial/desarrollo (Fase 12, sin
+construir); Alembic; auth si el deploy lo requiere; 2ª División.
