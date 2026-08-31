@@ -3,12 +3,12 @@
 Motor de scouting de fútbol. Código de producción del proyecto (el
 experimento de validación de datos vive aparte, en `../data-experiment/`).
 
-**Fase actual: 9 — API FastAPI.** Expone el núcleo analítico (Fases 0-8)
-por HTTP, sin auth, con Swagger en `/docs`. (Fases previas: 1 esquema,
-2 ETL, 3 percentiles, 5 Player Role Score, 6 Similarity Engine, 7 Team
-Style Profile, 8 Tactical Fit Score.) Lo siguiente es el frontend
-(Fase 10). Segunda División será una segunda pasada del mismo ETL cuando
-escale.
+**Fase actual: 10 — Frontend.** React + Vite en `frontend/`, consume la
+API de la Fase 9. (Fases previas: 1 esquema, 2 ETL, 3 percentiles, 5 Player
+Role Score, 6 Similarity Engine, 7 Team Style Profile, 8 Tactical Fit
+Score, 9 API FastAPI.) Con esto el proyecto tiene el flujo completo:
+datos → análisis → API → interfaz. Segunda División será una segunda
+pasada del mismo ETL cuando escale.
 
 ## Requisitos
 
@@ -74,6 +74,9 @@ python -m analysis.tactical_fit --player "Rodri" --w-role 0.6 --w-style 0.4   # 
 
 # API (Fase 9): expone todo lo anterior por HTTP.
 python -m uvicorn api.main:app --reload        # -> http://127.0.0.1:8000/docs
+
+# Frontend (Fase 10): React + Vite. Necesita la API corriendo.
+cd frontend && npm install && npm run dev      # -> http://localhost:5173
 ```
 
 ## Estructura
@@ -96,6 +99,7 @@ api/
   routers/               players, teams, roles, scouting
   services/              llaman a analysis/ o consultan las tablas ya pobladas
   schemas/               Pydantic de request/response (NO confundir con loaders/schemas.py)
+frontend/              Fase 10: React + Vite. 4 pantallas sobre la API. Ver frontend/README.md
 analysis/
   percentiles.py         Fase 3: per-90 + percentiles por bucket, idempotente
   role_scores.py         Fase 5: Player Role Score con pesos, idempotente

@@ -937,3 +937,136 @@ README + sección "API".
 **Pendientes (Fase 10+):** frontend; "Replace Player" (Fase 11, reusará
 similar + tactical-fit); endpoints de potencial/desarrollo (Fase 12, sin
 construir); Alembic; auth si el deploy lo requiere; 2ª División.
+
+## 2026-08-31 — Fase 10: Frontend (React + Vite)
+
+Interfaz de las 4 pantallas sobre la API de la Fase 9. Vive en `frontend/`.
+El prompt traía guía de diseño explícita (filosofía de pulido de UI +
+dirección visual); el plan se hizo en dos pasadas antes de programar.
+
+### Plan de diseño — primera pasada
+
+**Concepto.** Pizarra táctica de noche + mesa de análisis de retransmisión.
+NO "dark SaaS": el verde-pizarra es el *entorno* (la sala en la que estás),
+no un acento. Un único acento ámbar para el foco. Tipografía editorial +
+técnica.
+
+**Color** (`src/styles.css`, tokens propios):
+
+| token | hex | uso |
+|---|---|---|
+| `--bg` | `#0E1512` | fondo: negro con cast verde (no es `#0a0a0a`) |
+| `--surface` | `#16201C` | paneles, filas de tabla |
+| `--surface-2` | `#1F2D28` | input, hover, track de barras |
+| `--border` | `#33443D` | hairlines — todo se separa con líneas, no sombras |
+| `--text` / `--text-dim` | `#E7EDE8` / `#8A9C92` | tiza / salvia |
+| `--signal` | `#E0A94A` | ámbar: EL color de foco (score titular, nav activo, focus ring). Nada más. |
+| `--strong` / `--weak` | `#57B78A` / `#BF6A55` | dato positivo ya orientado / eje que trabaja en contra (solo direction=negative) |
+
+**Tipografía:** Source Serif 4 (display: títulos de pantalla, nombre del
+jugador — gravedad editorial de informe), IBM Plex Sans (UI, cifras
+tabulares), IBM Plex Mono (toda medida: percentiles, scores, minutos, IDs,
+codes). Escala 33 / 21 / 14 / 12.5 px; el score de rol a 20 px mono ámbar.
+
+**Layout:** topbar fina (46px) con wordmark `scouting-engine` en mono
+(guiño CLI) + 3 links de nav. Sin sidebar. Contenido centrado, máx 1180px.
+Búsqueda = filtros pegados a la tabla + tabla densa. Ficha = dos columnas
+asimétricas (1.32fr / 1fr) separadas por un hairline vertical (izquierda
+role fit interactivo, derecha percentiles estáticos) + similares debajo.
+Equipo = select + grupos de barras por formación. Encaje = formulario +
+botón + tabla-ranking con filas expandibles.
+
+**Principios (qué lo aleja de "otro dashboard SaaS"):** tablas, no rejillas
+de cards (el scout compara por columna); el desglose siempre visible o a un
+clic; mono para toda cifra; un solo color de énfasis; verde como entorno,
+no acento; casi sin border-radius ni sombras (se separa con líneas, como
+una hoja de cálculo); densidad.
+
+### Segunda pasada — autocrítica y cambios
+
+Lo que aún olía a "salida por defecto", y qué cambié:
+
+- **Cards por formación en el perfil de equipo** → eliminadas. Grupos de
+  barras con label + hairline superior, mismo borde izquierdo que todo lo
+  demás. Sin caja, sin sombra, sin radius.
+- **Las dos columnas de la ficha eran "widget izq / widget der"** →
+  asimétricas y con ritmos internos distintos, separadas solo por un
+  hairline, sin borde de card.
+- **Punto verde "API live" en la esquina** → fuera. Si la API cae, la
+  pantalla muestra un error honesto.
+- **Barra de filtros como pill flotante** → fila plana de controles con
+  hairline debajo, parte de la tabla.
+- **Score titular ámbar a 40px** → 20px, pegado inmediatamente a su
+  desglose. El número es la etiqueta de las barras, no un trofeo.
+- **Subtítulos dim bajo cada título** (eyebrow reubicado) → cortados.
+  Título solo, o con una sola cifra funcional.
+- **Stagger en la tabla de resultados** → no (vista de cientos de usos/día).
+  Solo se anima el expand de un desglose (200ms, scale(0.97)→1, ease-out) y
+  el swap al filtrar (120ms solo opacidad, sin movimiento).
+- **Botón con "→"** → sin flecha; feedback 120ms.
+
+Cumplimiento de las reglas de animación: cero `transition: all`; cero
+`ease-in`; curvas custom (`cubic-bezier(0.16,1,0.3,1)`); nada > 300ms;
+`@media (hover:hover) and (pointer:fine)` en todos los `:hover`;
+`prefers-reduced-motion` quita movimiento y deja opacidad/color.
+
+### Librería de gráficos: ninguna
+
+Todo "gráfico" es una barra horizontal 0-100. Componente `<Bar>` de ~15
+líneas (`<div>` con `width: N%`): hereda los tokens y las transiciones sin
+fricción, es accesible (no `<canvas>`), y es una dependencia menos en un
+repo público. Se descartó un radar: con 17-34 métricas en el perfil de
+percentiles es ruido, y comparar la posesión de dos equipos pide leer
+"97 vs 41", no mirar dos pentágonos. Recharts sería la elección si el
+diseño pidiera scatter/series reales; no las pide. Tampoco React Query
+(4 pantallas de lectura + 1 POST).
+
+### Las 4 pantallas
+
+1. **Búsqueda** (`/players`) — filtros bucket/equipo/lado/minutos/edad sobre
+   `GET /players`; tabla densa; paginación offset/limit con total.
+2. **Ficha** (`/players/:id`) — cabecera serif + meta; izquierda: cada rol
+   es fila (nombre + score ámbar + chevron), al abrir muestra el **desglose
+   como barras** (métrica, percentil, `×peso`); derecha: los ~34 percentiles
+   agrupados por categoría, cada grupo ordenado desc; abajo: similares con
+   filtros lado/edad sobre el top-20 ya calculado (rank conserva su número).
+3. **Equipo** (`/teams/:id`) — select de equipo; barras del agregado + un
+   grupo por formación con ≥5 partidos; las de <5 en "muestra insuficiente"
+   atenuadas, nombre + nº, sin barras. Barras de equipo en gris (un valor
+   de estilo no es "bueno").
+4. **Encaje táctico** (`/fit`) — select equipo + rol + formación; botón
+   "Buscar" → `POST /scouting/tactical-fit`; ranking (role / style / **fit**
+   ámbar); clic en fila expande el desglose por eje con `p{bruto} →
+   {efectivo}` y marca "(en contra)" los negativos.
+
+### Validación — smoke test contra la API real (`npm test`, vitest + jsdom)
+
+5/5 pasan, renderizando cada pantalla contra uvicorn:
+
+- búsqueda: "339 con datos" (= pool de Fase 3), tabla con filas.
+- ficha Camavinga: Ball Winner **90.1** (= Fase 5), "entradas" en el
+  desglose, grupos de percentiles, Johnny Cardoso como similar top-1.
+- equipo Barça: agregado + 4-2-3-1 + 4-3-3 + "muestra insuficiente" con
+  4-1-4-1.
+- encaje táctico: seleccionar Dep. Alavés + Ball Winner + Buscar →
+  Camavinga con **92.3** (idéntico a la validación de Fase 8).
+
+`npm run build` OK (234 KB JS / 73 KB gzip). `npm run lint` limpio.
+Sin navegador esta sesión (extensión no instalada); la verificación visual
+la hace el usuario con `npm run dev`.
+
+### Arranque
+
+    # 1. API (raíz de scouting-engine/)
+    python -m uvicorn api.main:app --reload      # :8000
+    # 2. frontend
+    cd frontend && npm install && npm run dev     # :5173
+
+**Código nuevo:** `frontend/` (React + Vite, 4 pantallas, ~1000 líneas +
+smoke test). Deps: react-router-dom; dev: vitest, jsdom, testing-library.
+`node_modules/` y `dist/` en el `.gitignore` propio de `frontend/`.
+
+**Pendientes (Fase 11+):** "Replace Player" (reusará similar + tactical-fit);
+Young Talent / potencial (Fase 12, sin endpoint); deploy (auth, "per
+domain" de Sportmonks); 2ª División. Con Fases 0-10 el proyecto está
+completo de extremo a extremo: datos → análisis → API → interfaz.
