@@ -3,9 +3,11 @@
 Motor de scouting de fútbol. Código de producción del proyecto (el
 experimento de validación de datos vive aparte, en `../data-experiment/`).
 
-**Fase actual: 3 — normalización per-90 + percentiles por posición.**
-Todavía NO hay Player Role Score con pesos (Fase 4). Segunda División será
-una segunda pasada del mismo ETL cuando escale.
+**Fase actual: 8 — Tactical Fit Score.** Con esto se cierra el núcleo
+analítico (Fases 0-8). (Fases previas: 1 esquema, 2 ETL, 3 percentiles,
+5 Player Role Score, 6 Similarity Engine, 7 Team Style Profile.) Lo
+siguiente sería backend (FastAPI, Fase 9) y frontend (Fase 10). Segunda
+División será una segunda pasada del mismo ETL cuando escale.
 
 ## Requisitos
 
@@ -39,10 +41,35 @@ python -m loaders.etl_laliga --dry-run --limit 14   # prueba rapida
 python -m loaders.etl_laliga --dry-run              # dry-run completo (rollback)
 python -m loaders.etl_laliga                        # carga real (idempotente)
 
+# ETL de partidos (Fase 7): team_fixtures + team_fixture_statistics.
+python -m loaders.etl_team_fixtures --dry-run       # descarga (8 pags) + carga + rollback
+python -m loaders.etl_team_fixtures                 # carga real (idempotente)
+python -m loaders.etl_team_fixtures --offline       # solo JSON cacheado, sin API
+
 # Percentiles (Fase 3): normalizar per-90 y rankear por bucket de posicion.
 python -m analysis.percentiles --dry-run            # calcula y hace rollback
 python -m analysis.percentiles                      # umbral por defecto 900 min
 python -m analysis.percentiles --min-minutes 750    # el umbral es un parametro
+
+# Player Role Score (Fase 5): score de encaje 0-100 por rol, con desglose.
+python -m analysis.role_scores --dry-run            # calcula y hace rollback
+python -m analysis.role_scores                      # usa percentiles de umbral 900
+python -m analysis.role_scores --min-minutes 750    # si recalculaste percentiles a 750
+
+# Player Similarity (Fase 6): top-20 similar por jugador (cosine, mismo bucket).
+python -m analysis.similarity --dry-run             # calcula y hace rollback
+python -m analysis.similarity                       # usa percentiles de umbral 900
+python -m analysis.similarity --explain "Pedri"     # top-20 ya calculado de un jugador
+
+# Ejes de estilo de equipo (Fase 8, parte precalculada): percentiles por eje.
+python -m analysis.team_style --dry-run
+python -m analysis.team_style                       # umbral 5 partidos/formacion (Fase 7)
+
+# Tactical Fit Score (Fase 8): se calcula BAJO DEMANDA, no hay tabla.
+python -m analysis.tactical_fit --player "Pedri" --role deep_lying_playmaker --explain
+python -m analysis.tactical_fit --team "FC Barcelona" --role ball_winner --top 10
+python -m analysis.tactical_fit --player "Isco" --team "Osasuna" --by-formation --explain
+python -m analysis.tactical_fit --player "Rodri" --w-role 0.6 --w-style 0.4   # peso ajustable
 ```
 
 ## Estructura
@@ -50,7 +77,7 @@ python -m analysis.percentiles --min-minutes 750    # el umbral es un parametro
 ```
 db/
   database.py        engine + Session (lee DATABASE_URL del .env)
-  models.py          los 9 modelos SQLAlchemy
+  models.py          los 20 modelos SQLAlchemy
   seed_catalogs.py   datos estáticos de positions y stat_types
   create_schema.py   create_all() + seed (sin Alembic todavía)
 loaders/
@@ -58,8 +85,13 @@ loaders/
   sportmonks_mapping.py  helpers JSON -> esquema interno (compartidos)
   smoke_test_load.py     Fase 1: carga puntual de 13 jugadores
   etl_laliga.py          Fase 2: ETL masivo del roster, idempotente
+  etl_team_fixtures.py   Fase 7: ETL de partidos (formaciones + stats de equipo), idempotente
 analysis/
   percentiles.py         Fase 3: per-90 + percentiles por bucket, idempotente
+  role_scores.py         Fase 5: Player Role Score con pesos, idempotente
+  similarity.py          Fase 6: Player Similarity Engine (cosine, top-20), idempotente
+  team_style.py          Fase 8: ejes de estilo por equipo/formacion (percentiles), idempotente
+  tactical_fit.py        Fase 8: Tactical Fit Score, funcion parametrizada BAJO DEMANDA
 ```
 
 ## Percentiles (`analysis/percentiles.py`)
@@ -110,11 +142,176 @@ player_stats/{id}.json
 lotes de 50, así que si se corta a la fila 400 se puede relanzar sin
 limpiar la BD.
 
+## Player Role Score (`analysis/role_scores.py`)
+
+Puebla `player_role_scores` + `player_role_score_breakdown` de forma
+idempotente (DELETE scoped + INSERT), a partir de `player_percentiles`
+(Fase 3) y del catálogo `roles` / `role_buckets` / `role_weights`.
+
+- **4 roles "construibles plenos"** (`../data-experiment/docs/roles_fase4_mapping.md`):
+  `ball_winner`, `deep_lying_playmaker`, `advanced_playmaker`,
+  `ball_playing_cb`. Un jugador solo recibe score en un rol si el `bucket`
+  de su `primary_position` está en `role_buckets`.
+- **Pesos por nivel** (`role_weights.tier`, informativo): núcleo 3,
+  apoyo 1.5, contexto 0.5. El cálculo usa solo `role_weights.weight`.
+- **Fórmula:** `score = SUM(percentil × peso) / SUM(peso)`, ya en `[0,100]`.
+- **Métricas faltantes → se excluyen del numerador y del denominador**
+  (el peso se renormaliza sobre lo disponible), NO se imputan a percentil
+  50. Motivo: los percentiles de Fase 3 ya imputan los ceros omitidos de
+  Sportmonks antes de rankear, así que un percentil bajo ya significa
+  "hace poco de esto"; un percentil ausente significa falta de dato (otra
+  liga/temporada), e imputar 50 inventaría una media que no tenemos.
+  `player_role_scores.total_weight` (< peso del rol ⇒ había huecos) y
+  `metrics_used` son provenance. Guarda: si el peso disponible cae por
+  debajo del **60 %** del peso del rol, no se emite fila.
+  En LaLiga 2024/25 la cobertura es del 100 % → 0 jugadores afectados.
+- **Explicabilidad:** `player_role_score_breakdown` guarda una fila por
+  métrica con `percentile`, `weight` y `contribution` (= percentil × peso).
+  `SUM(contribution) / SUM(weight)` sobre esas filas reproduce el `score`.
+
+## Player Similarity Engine (`analysis/similarity.py`)
+
+Puebla `player_similarity` de forma idempotente (**DELETE scoped +
+INSERT**). Para cada jugador, guarda solo su **top-20 más similar** dentro
+de su mismo `bucket` y temporada — NO la matriz N² completa.
+
+- **Vector de features:** los percentiles per90 de `player_percentiles`
+  (Fase 3), **todas las métricas del bucket** (34 de campo; 37 portero,
+  con las 3 solo-portero). La cobertura de Fase 3 es del 100 % dentro de
+  cada bucket → todos los vectores están alineados y completos.
+- **Distancia:** cosine similarity sobre el percentil crudo `[0,100]`
+  (todo positivo → similitud en `[0,1]`). Los scores se agrupan alto
+  (top-1 típico 0.88-0.94); **lo que discrimina es el ranking**, no el
+  valor absoluto. Verificado a ojo: lateral ofensivo y lateral defensivo
+  puro NO salen en el top-20 el uno del otro.
+- **Solo mismo bucket.** Sin comparación cross-posición en esta fase.
+- **Idempotencia = DELETE scoped + INSERT** (no upsert): el top-20 de un
+  jugador puede cambiar de miembros entre pasadas y un upsert dejaría
+  filas viejas colgando.
+- La tabla **no es simétrica** (que B esté en el top-20 de A no implica lo
+  contrario, ni con el mismo score/rank).
+
+**Filtros de edad y lado = parámetros de consulta, NO del cálculo.** Se
+aplican con un `WHERE` al leer `player_similarity` (join a `players`
+`birth_date` / `positions.lado`); la similitud estadística entre dos
+jugadores no cambia según el filtro que se use después. Ejemplo — similares
+a X sub-23 y por la izquierda:
+
+```sql
+SELECT sp.name, ps.similarity_score, ps.rank
+FROM player_similarity ps
+JOIN players p  ON p.id = ps.player_id
+JOIN players sp ON sp.id = ps.similar_player_id
+JOIN positions pos ON pos.id = sp.primary_position_id
+WHERE p.name = 'Lamine Yamal'
+  AND date_part('year', age(DATE '2025-05-25', sp.birth_date)) < 23
+  AND pos.lado = 'izquierda'
+ORDER BY ps.rank;
+```
+
+**Fuera de alcance (pendientes conocidos):** pie dominante
+(`players.preferred_foot` sigue NULL en todo el roster) y valor de mercado
+(sin fuente en ningún proveedor). Ningún filtro puede apoyarse en ellos
+todavía.
+
+## Team Style Profile (`loaders/etl_team_fixtures.py`)
+
+Perfil de equipo construido desde **datos reales de partido**, no a mano.
+Grano **crudo por partido**: 1 fila por (equipo, partido) en
+`team_fixtures` + sus stats en `team_fixture_statistics`. **La agregación
+por formación (V/E/D, medias, por venue) se hace por consulta (`GROUP BY`),
+no en la carga** — mismo principio que `player_team_season` /
+`player_statistics`.
+
+- **Descarga:** bulk paginado de Sportmonks
+  (`/fixtures?filters=fixtureSeasons:{id}&include=participants;formations;statistics.type;scores;state&per_page=50`),
+  **8 peticiones** para los 380 partidos. JSON crudo en
+  `../data-experiment/raw_data/sportmonks/fixtures/page_NN.json`. `lineups`
+  NO se descarga (el perfil no lo usa; inflaba el JSON ~20×).
+- **Catálogo `team_stat_types`** (15 codes: posesión, pases + precisión +
+  largos, tiros total/puerta/dentro/fuera, córners, faltas, tackles,
+  intercepciones, centros totales + precisos, regates). **Separado de
+  `stat_types`** (stats de jugador) a propósito: varios `code` coinciden
+  pero la entidad y la unidad son distintas (total de un equipo en un
+  partido vs per-90 de temporada de un jugador), y `normalization` /
+  `direction` / `valid_for` de `stat_types` no aplican a una stat de
+  equipo.
+- **`goals` NUNCA sale de statistics** (Sportmonks lo omite en 0):
+  `goals_for` / `goals_against` vienen siempre de `scores[]`
+  (`description == "CURRENT"`); `result` se deriva.
+- **Ceros omitidos:** `is_imputed_zero` como en `player_statistics` —
+  se imputa 0 en stats `count` ausentes, las `percentage` (posesión,
+  precisión) no se imputan. En LaLiga 24/25: solo 4 filas imputadas de
+  22 800.
+- **`is_conceded`:** `false` = stat propia; `true` = la misma stat del
+  rival en ese partido (perfil defensivo, gratis del mismo fixture). No
+  duplica filas de `team_fixtures`.
+- **Idempotente:** DELETE scoped por `season_id` (+ cascade) + INSERT. No
+  upsert (el set de stats presentes de un partido puede cambiar entre
+  descargas).
+
+Umbral sugerido al agregar: **≥5 partidos por formación** (`HAVING
+count(*) >= 5`) — por debajo, la V/E/D y las medias son ruido de
+calendario. Filtro de consulta, no almacenado.
+
+## Tactical Fit Score (`analysis/tactical_fit.py`)
+
+Compatibilidad jugador-equipo:
+
+```
+tactical_fit = w_role · role_score  +  w_style · style_compatibility
+```
+
+Ambos componentes en `[0,100]`, `w_role + w_style = 1` → score en `[0,100]`.
+Pesos **70/30 por defecto, como parámetro** (`--w-role` / `--w-style`), no
+hardcodeado. Heurística explícita — sin datos de evento no hay forma de
+*aprender* qué perfil rinde en qué estilo.
+
+- **No se materializa.** El producto cartesiano jugador×equipo×rol×formación
+  (~34 k filas de `0.7·a + 0.3·b`) quedaría obsoleto al tocar el peso. Se
+  calcula **bajo demanda** con una función parametrizada (decisión
+  consultada, patrón "función parametrizada" como los percentiles de
+  Fase 3). Lo que sí se precalcula (parte cara y reutilizable): los
+  percentiles de estilo en **`team_style_axes`** (325 filas).
+- **5 ejes de estilo** (percentil del equipo entre los 20 de LaLiga, para
+  el equipo+formación o el agregado si la formación no llega a 5 partidos):
+  `possession`, `pass_accuracy`, `crossing_frequency` (centros/partido),
+  `press_intensity` (tackles+intercepciones/partido), `directness`
+  (long-passes/passes).
+- **Matriz rol→estilo** (`role_style_weights`, catálogo, **pesos planos
+  1.0** — la matriz de diseño solo da signos y hay 1-3 ejes por rol, los
+  tiers de Fase 5 añadirían precisión falsa):
+
+  | rol | ejes |
+  |---|---|
+  | Deep-Lying Playmaker | +possession, +pass_accuracy, **−directness** |
+  | Ball Playing CB | +possession, +pass_accuracy |
+  | Advanced Playmaker | +crossing_frequency |
+  | Ball Winner | +press_intensity |
+
+  `direction = negative` → en el cálculo se usa `100 − percentil` (directitud
+  alta perjudica a un Deep-Lying Playmaker).
+- **`style_compatibility` = `SUM(pctl_efectivo · peso) / SUM(peso)`** — misma
+  forma de combinar que el Role Score de la Fase 5. El desglose por eje
+  (`--explain`) dice qué eje sumó y qué eje restó.
+- **Caveats:** `press_intensity` (tackles+intercepciones) no es presión
+  real (necesita datos de evento / PPDA); mide "actividad defensiva", que
+  correlaciona con MENOS posesión — hereda el caveat de posesión de
+  Fase 3. Advanced Playmaker y Ball Winner tienen un solo eje de estilo,
+  así que su `style_compatibility` es ese único percentil.
+
 ## Esquema
 
-Catálogos: `competitions`, `seasons`, `teams`, `positions`, `stat_types`.
-Entidades: `players`, `player_team_season`, `player_statistics`.
+Catálogos: `competitions`, `seasons`, `teams`, `positions`, `stat_types`,
+`roles`, `role_buckets`, `role_weights`, `team_stat_types`,
+`role_style_weights`.
+Entidades: `players`, `player_team_season`, `player_statistics`,
+`team_fixtures`, `team_fixture_statistics`.
 Derivado (Fase 3): `player_percentiles`.
+Derivado (Fase 5): `player_role_scores`, `player_role_score_breakdown`.
+Derivado (Fase 6): `player_similarity`.
+Derivado (Fase 8): `team_style_axes` (el Tactical Fit en sí no se
+almacena — función bajo demanda).
 
 Puntos de diseño que vienen del experimento de Fase 0
 (`../data-experiment/docs/DECISIONS.md`):
