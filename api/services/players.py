@@ -14,6 +14,9 @@ from fastapi import HTTPException
 from sqlalchemy import Integer, cast, func, literal, select
 from sqlalchemy.orm import Session, aliased
 
+from analysis.narrative import player_role_summary, team_style_narrative
+from analysis.tactical_fit import tactical_fit
+
 from db.models import (
     Player,
     PlayerPercentile,
@@ -24,9 +27,9 @@ from db.models import (
     PlayerTeamSeason,
     Position,
     Role,
-    RoleBucket,
     StatType,
     Team,
+    TeamStyleAxis,
 )
 
 # umbral con el que analysis/percentiles.py y role_scores.py se ejecutaron.
@@ -214,6 +217,7 @@ def get_player_profile(db: Session, player_id: int) -> dict:
         "photo_url": p.photo_url,
         "minutes": int(row.minutes),
         "min_minutes_threshold": PERCENTILE_MIN_MINUTES,
+        "summary": player_role_summary(db, player_id),
         "percentiles": [
             {
                 "stat_type_code": c.code,
@@ -378,3 +382,110 @@ def get_player_roles(db: Session, player_id: int) -> dict:
         note = "Role scores en los roles que aplican a su bucket, con desglose por métrica."
 
     return {"player_id": p.id, "player_name": p.name, "bucket": row.bucket, "note": note, "items": items}
+
+
+# ---------------------------------------------------------------------------
+# Fase 11 - Tactical Fit invertido: jugador -> mejores equipos
+# ---------------------------------------------------------------------------
+
+def _team_narratives(db: Session):
+    """{team_id: narrativa} usando los ejes agregados de team_style_axes."""
+    rows = db.execute(
+        select(
+            TeamStyleAxis.team_id, Team.name, TeamStyleAxis.style_axis, TeamStyleAxis.percentile
+        )
+        .join(Team, Team.id == TeamStyleAxis.team_id)
+        .where(TeamStyleAxis.formation.is_(None))
+    ).all()
+    by_team = {}
+    names = {}
+    for r in rows:
+        by_team.setdefault(r.team_id, []).append(
+            {"style_axis": r.style_axis, "percentile": float(r.percentile)}
+        )
+        names[r.team_id] = r.name
+    return {tid: team_style_narrative(axes, names[tid]) for tid, axes in by_team.items()}
+
+
+def get_best_teams(db: Session, player_id: int, *, role_id: int | None = None) -> dict:
+    row = _load_player_row(db, player_id)
+    p: Player = row[0]
+
+    scored = db.execute(
+        select(PlayerRoleScore.role_id, Role.code, Role.label, PlayerRoleScore.score)
+        .join(Role, Role.id == PlayerRoleScore.role_id)
+        .where(PlayerRoleScore.player_id == player_id)
+        .order_by(PlayerRoleScore.score.desc())
+    ).all()
+
+    if not scored:
+        return {
+            "player_id": p.id,
+            "player_name": p.name,
+            "role_id": None,
+            "role_code": None,
+            "role_label": None,
+            "role_score": None,
+            "available_roles": [],
+            "note": (
+                "Sin role score: la posición del jugador (delantero/portero) no tiene "
+                "ninguno de los 4 roles construibles plenos, o no llega al umbral de minutos."
+            ),
+            "count": 0,
+            "ranking": [],
+        }
+
+    available = [
+        {"role_id": s.role_id, "role_code": s.code, "role_label": s.label, "score": float(s.score)}
+        for s in scored
+    ]
+
+    if role_id is not None:
+        chosen = next((s for s in scored if s.role_id == role_id), None)
+        if chosen is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"El jugador {player_id} no tiene score en el rol {role_id}. "
+                    f"Roles con score: {[a['role_id'] for a in available]}."
+                ),
+            )
+    else:
+        chosen = scored[0]  # mayor score
+
+    results, w_role, w_style = tactical_fit(
+        db, player_id=player_id, role_code=chosen.code, by_formation=False
+    )
+    narratives = _team_narratives(db)
+
+    ranking = [
+        {
+            "team_id": r["team_id"],
+            "team_name": r["team_name"],
+            "n_matches": r["n_matches"],
+            "role_score": r["role_score"],
+            "style_component": r["style_component"],
+            "score": r["score"],
+            "team_narrative": narratives.get(r["team_id"], ""),
+            "breakdown": r["breakdown"],
+        }
+        for r in results
+    ]
+
+    return {
+        "player_id": p.id,
+        "player_name": p.name,
+        "role_id": chosen.role_id,
+        "role_code": chosen.code,
+        "role_label": chosen.label,
+        "role_score": float(chosen.score),
+        "available_roles": available,
+        "w_role": w_role,
+        "w_style": w_style,
+        "note": (
+            "Encaje del jugador en cada equipo de LaLiga con su rol. role_score fijo "
+            "(el mismo para todos los equipos); lo que cambia el orden es el estilo del equipo."
+        ),
+        "count": len(ranking),
+        "ranking": ranking,
+    }

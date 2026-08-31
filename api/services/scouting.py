@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from analysis.narrative import team_style_narrative
 from analysis.tactical_fit import DEFAULT_W_ROLE, DEFAULT_W_STYLE, tactical_fit
 from db.models import Role, Team, TeamStyleAxis
 
@@ -79,6 +80,20 @@ def tactical_fit_ranking(db: Session, *, team_id: int, role_id: int, formation: 
         w_style=DEFAULT_W_STYLE,
     )
 
+    # narrativa del estilo del equipo (el perfil que se usó: formación o agregado)
+    style_axes = db.execute(
+        select(TeamStyleAxis.style_axis, TeamStyleAxis.percentile).where(
+            TeamStyleAxis.team_id == team_id,
+            TeamStyleAxis.formation == formation
+            if formation is not None
+            else TeamStyleAxis.formation.is_(None),
+        )
+    ).all()
+    team_narrative = team_style_narrative(
+        [{"style_axis": a.style_axis, "percentile": float(a.percentile)} for a in style_axes],
+        team.name,
+    )
+
     n_matches = results[0]["n_matches"] if results else None
     ranking = [
         {
@@ -101,6 +116,7 @@ def tactical_fit_ranking(db: Session, *, team_id: int, role_id: int, formation: 
         "role_label": role.label,
         "formation": formation,
         "n_matches": n_matches,
+        "team_narrative": team_narrative,
         "w_role": w_role,
         "w_style": w_style,
         "count": len(ranking),

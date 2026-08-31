@@ -156,6 +156,8 @@ export default function TacticalFit() {
             </div>
           </div>
 
+          {d.team_narrative && <p className="player-summary">{d.team_narrative}</p>}
+
           <table className="table">
             <thead>
               <tr>

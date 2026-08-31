@@ -3,12 +3,12 @@
 Motor de scouting de fútbol. Código de producción del proyecto (el
 experimento de validación de datos vive aparte, en `../data-experiment/`).
 
-**Fase actual: 10 — Frontend.** React + Vite en `frontend/`, consume la
-API de la Fase 9. (Fases previas: 1 esquema, 2 ETL, 3 percentiles, 5 Player
-Role Score, 6 Similarity Engine, 7 Team Style Profile, 8 Tactical Fit
-Score, 9 API FastAPI.) Con esto el proyecto tiene el flujo completo:
-datos → análisis → API → interfaz. Segunda División será una segunda
-pasada del mismo ETL cuando escale.
+**Fase actual: 11 — foto, resumen narrativo, fit invertido.** Funciones
+nuevas sobre LaLiga 2024/25 (la migración a 2025/26 + Segunda es la
+Fase 12). Resúmenes por **reglas, sin LLM** (deterministas y auditables).
+(Fases previas: 1 esquema, 2 ETL, 3 percentiles, 5 Player Role Score,
+6 Similarity Engine, 7 Team Style Profile, 8 Tactical Fit Score, 9 API
+FastAPI, 10 Frontend.)
 
 ## Requisitos
 
@@ -106,6 +106,7 @@ analysis/
   similarity.py          Fase 6: Player Similarity Engine (cosine, top-20), idempotente
   team_style.py          Fase 8: ejes de estilo por equipo/formacion (percentiles), idempotente
   tactical_fit.py        Fase 8: Tactical Fit Score, funcion parametrizada BAJO DEMANDA
+  narrative.py           Fase 11: resumenes por reglas (jugador y estilo de equipo), sin LLM
 ```
 
 ## Percentiles (`analysis/percentiles.py`)
@@ -333,13 +334,24 @@ Fase 8), no se cachea.
 | Método | Ruta | Qué hace |
 |---|---|---|
 | GET | `/players` | Lista paginada (`offset`/`limit`/`total_count`). Filtros: `bucket`, `team_id`, `min_minutes` (900), `age_min`, `age_max`, `side`. |
-| GET | `/players/{id}` | Bio + equipo + bucket/lado + percentiles de su bucket. 404 si no existe; `percentiles: []` si < umbral de minutos. |
+| GET | `/players/{id}` | Bio + `photo_url` + equipo + bucket/lado + percentiles + **`summary`** (frase por reglas: mejor rol + sus métricas core, Fase 11). 404 si no existe; `percentiles: []` si < umbral. |
 | GET | `/players/{id}/similar` | Top-20 de `player_similarity` ya calculado. Filtros `age_max`/`side` **sobre el resultado** (rank conserva su número). |
 | GET | `/players/{id}/roles` | Role scores del jugador + desglose completo de `player_role_score_breakdown`. |
+| GET | `/players/{id}/best-teams` | **Tactical Fit invertido (Fase 11):** ranking de los 20 equipos por encaje del jugador. `?role_id` opcional (si no, el de mayor score). Cada equipo con su `team_narrative`. |
 | GET | `/teams` | Los 20 equipos. |
-| GET | `/teams/{id}/style` | Estilo por formación desde `team_style_axes`. Formaciones con < 5 partidos van en `formations_below_threshold` (nombre + nº, sin ejes) — ver decisión abajo. |
+| GET | `/teams/{id}/style` | Estilo por formación desde `team_style_axes` + **`narrative`** (descripción por reglas, Fase 11). Formaciones con < 5 partidos en `formations_below_threshold` (nombre + nº, sin ejes) — ver decisión abajo. |
 | GET | `/roles` | Los 4 roles con `metric_weights` (Fase 5) y `style_weights` (Fase 8). |
-| POST | `/scouting/tactical-fit` | Body `{team_id, role_id, formation?}`. Ranking de jugadores por `score` desc con desglose. Formación sin muestra → 422 con la lista de formaciones disponibles. |
+| POST | `/scouting/tactical-fit` | Body `{team_id, role_id, formation?}`. Ranking de jugadores por `score` desc con desglose + **`team_narrative`**. Formación sin muestra → 422 con la lista de formaciones disponibles. |
+
+**Fase 11 — resúmenes narrativos por reglas** (`analysis/narrative.py`,
+sin LLM: plantillas fijas, deterministas, auditables). `player_role_summary`
+(mejor rol + 2-3 métricas core de mayor contribución; si no hay rol, lo
+dice explícitamente) y `team_style_narrative` (los 1-2 ejes de estilo más
+alejados del percentil 50, con umbrales ≥70 / ≤30). **Sin entrenador:** la
+investigación de la Fase 11
+(`../data-experiment/docs/fase11_coach_investigation.md`) concluyó que las
+fechas de tenencia de Sportmonks no son fiables para fijar el entrenador de
+una temporada pasada; la narrativa usa solo el nombre del equipo.
 
 **Errores:** 404 (id inexistente), 422 (Pydantic para body/query inválido;
 también para `formation`/`team_id` sin datos suficientes, con mensaje que

@@ -39,8 +39,8 @@ src/
   App.jsx        shell (topbar + nav) + rutas
   pages/
     PlayerSearch.jsx   1. búsqueda con filtros
-    PlayerProfile.jsx  2. ficha: role fit con desglose + percentiles + similares
-    TeamProfile.jsx    3. estilo por formación (+ muestra insuficiente marcada)
+    PlayerProfile.jsx  2. ficha: foto + resumen + role fit + percentiles + similares + mejores equipos
+    TeamProfile.jsx    3. estilo por formación (+ narrativa + muestra insuficiente marcada)
     TacticalFit.jsx    4. formulario -> ranking con desglose expandible
   smoke.test.jsx  vitest: renderiza cada pantalla y comprueba coherencia con Fases 5/6/8
 ```

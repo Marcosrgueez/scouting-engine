@@ -41,24 +41,34 @@ test('búsqueda de jugadores: filtra y lista contra la API', async () => {
   expect(screen.getAllByRole('row').length).toBeGreaterThan(10)
 })
 
-test('ficha de jugador: role fit con desglose + similares (Camavinga)', async () => {
+test('ficha de jugador: foto, resumen, role fit, similares, mejores equipos (Camavinga)', async () => {
   mount('/players/396', <Route path="/players/:id" element={<PlayerProfile />} />)
   await waitFor(() => expect(screen.getByRole('heading', { name: 'Eduardo Camavinga' })).toBeDefined(), {
     timeout: 5000,
   })
-  // Ball Winner 90.1 (= Fase 5) y su desglose visible ('entradas' aparece
-  // en el desglose del rol y en el perfil de percentiles)
-  await waitFor(() => expect(screen.getByText('90.1')).toBeDefined())
+  // Fase 11: foto + resumen narrativo por reglas
+  await waitFor(() => expect(document.querySelector('img.player-photo')).toBeTruthy())
+  await waitFor(() =>
+    expect(screen.getByText(/se perfila como Ball Winner .*destaca en entradas/)).toBeDefined(),
+  )
+  // role fit: 'entradas' aparece en el desglose y en el perfil de percentiles
   await waitFor(() => expect(screen.getAllByText('entradas').length).toBeGreaterThan(0))
-  // percentiles agrupados
   await waitFor(() => expect(screen.getByText('Perfil de percentiles')).toBeDefined())
-  // similares: top-1 real
+  // similares: top-1 real (= Fase 6)
   await waitFor(() => expect(screen.getByText('Johnny Cardoso')).toBeDefined(), { timeout: 5000 })
+  // Fase 11: mejores equipos — Dep. Alavés arriba (= control de Fase 8)
+  await waitFor(() => expect(screen.getByText('Mejores equipos para este perfil')).toBeDefined())
+  await waitFor(() => {
+    const row = screen.getByText('Deportivo Alavés').closest('tr')
+    expect(within(row).getByText('92.3')).toBeDefined()
+  }, { timeout: 5000 })
 })
 
-test('perfil de equipo: agregado + formaciones + muestra insuficiente (Barça)', async () => {
+test('perfil de equipo: narrativa + agregado + formaciones + muestra insuficiente (Barça)', async () => {
   mount('/teams/10', <Route path="/teams/:id" element={<TeamProfile />} />)
   await waitFor(() => expect(screen.getByText('agregado')).toBeDefined(), { timeout: 5000 })
+  // Fase 11: narrativa de estilo por reglas — Barça = posesión alta, poco balón largo
+  await waitFor(() => expect(screen.getByText(/domina la posesión.*poco balón largo/)).toBeDefined())
   await waitFor(() => expect(screen.getByText('4-2-3-1')).toBeDefined())
   await waitFor(() => expect(screen.getByText('4-3-3')).toBeDefined())
   // 4-1-4-1 (1 partido) va en "muestra insuficiente"
@@ -76,10 +86,16 @@ test('encaje táctico: ranking coincide con la Fase 8 (Ball Winner en Dep. Alav�
   await user.selectOptions(selects[1], '1') // Ball Winner
   await user.click(screen.getByRole('button', { name: 'Buscar' }))
 
-  await waitFor(() => expect(screen.getByText(/Ball Winner/)).toBeDefined(), { timeout: 5000 })
   // top-1 = Camavinga con fit 92.3 (idéntico a la validación de Fase 8)
-  await waitFor(() => {
-    const row = screen.getByText('Eduardo Camavinga').closest('tr')
-    expect(within(row).getByText('92.3')).toBeDefined()
-  })
+  await waitFor(
+    () => {
+      const row = screen.getByText('Eduardo Camavinga').closest('tr')
+      expect(within(row).getByText('92.3')).toBeDefined()
+    },
+    { timeout: 5000 },
+  )
+  // Fase 11: narrativa del equipo en el resultado
+  await waitFor(() =>
+    expect(screen.getByText(/es muy activo en acciones defensivas/)).toBeDefined(),
+  )
 })

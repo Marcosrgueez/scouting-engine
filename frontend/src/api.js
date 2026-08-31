@@ -37,6 +37,7 @@ export const api = {
   player: (id) => req(`/players/${id}`),
   playerSimilar: (id, filters) => req(`/players/${id}/similar${qs(filters)}`),
   playerRoles: (id) => req(`/players/${id}/roles`),
+  playerBestTeams: (id, filters) => req(`/players/${id}/best-teams${qs(filters)}`),
   teams: () => req('/teams'),
   teamStyle: (id) => req(`/teams/${id}/style`),
   roles: () => req('/roles'),

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from api.dependencies import get_db
 from api.schemas.players import (
+    BestTeamsResponse,
     PlayerListResponse,
     PlayerProfile,
     PlayerRolesResponse,
@@ -75,3 +76,16 @@ def get_similar(
 )
 def get_roles(player_id: int, db: Session = Depends(get_db)):
     return svc.get_player_roles(db, player_id)
+
+
+@router.get(
+    "/{player_id}/best-teams",
+    response_model=BestTeamsResponse,
+    summary="Tactical Fit invertido: ranking de equipos de LaLiga por encaje del jugador",
+)
+def get_best_teams(
+    player_id: int,
+    db: Session = Depends(get_db),
+    role_id: int | None = Query(None, description="forzar un rol; si se omite, el de mayor score"),
+):
+    return svc.get_best_teams(db, player_id, role_id=role_id)

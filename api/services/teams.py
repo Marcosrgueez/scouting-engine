@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from analysis.narrative import team_style_narrative
 from db.models import Team, TeamFixture, TeamStyleAxis
 
 # umbral de partidos por formación de la Fase 7.
@@ -91,6 +92,7 @@ def get_team_style(db: Session, team_id: int) -> dict:
         "team_id": team.id,
         "team_name": team.name,
         "min_matches": STYLE_MIN_MATCHES,
+        "narrative": team_style_narrative(aggregate["axes"], team.name),
         "aggregate": aggregate,
         "by_formation": by_formation,
         "formations_below_threshold": formations_below,

@@ -56,6 +56,8 @@ export default function TeamProfile() {
 
       {d && (
         <div style={{ marginTop: 18, maxWidth: 640 }}>
+          <p className="player-summary">{d.narrative}</p>
+
           <div className="formation-group" style={{ borderTop: 0 }}>
             <div className="fg-head">
               <span className="fg-name">agregado</span>

@@ -44,6 +44,24 @@ class PercentileItem(BaseModel):
     pool_size: int
 
 
+class RoleSummaryDriver(BaseModel):
+    stat_type_code: str
+    stat_type_label: str
+    percentile: float
+    contribution: float
+
+
+class RoleSummary(BaseModel):
+    text: str = Field(description="frase por plantilla fija (Fase 11), sin LLM")
+    has_role: bool
+    role_code: str | None = None
+    role_label: str | None = None
+    score: float | None = None
+    drivers: list[RoleSummaryDriver] = Field(
+        default_factory=list, description="métricas core que sostienen la frase"
+    )
+
+
 class PlayerProfile(BaseModel):
     id: int
     name: str
@@ -64,6 +82,7 @@ class PlayerProfile(BaseModel):
         description="umbral con el que se calcularon los percentiles (900). "
         "Si minutes < umbral, percentiles va vacío."
     )
+    summary: RoleSummary
     percentiles: list[PercentileItem]
 
 
@@ -113,3 +132,50 @@ class PlayerRolesResponse(BaseModel):
     bucket: str | None = None
     note: str
     items: list[PlayerRoleScoreItem]
+
+
+# --- Fase 11: jugador -> mejores equipos (tactical fit invertido) ---
+
+class BestTeamAxisItem(BaseModel):
+    style_axis: str
+    direction: str
+    team_percentile: float
+    team_raw_value: float
+    effective_percentile: float
+    weight: float
+    contribution: float
+
+
+class BestTeamItem(BaseModel):
+    team_id: int
+    team_name: str
+    n_matches: int | None = None
+    role_score: float
+    style_component: float
+    score: float = Field(description="tactical fit, 0-100")
+    team_narrative: str = Field(description="descripción de estilo del equipo (Fase 11, por reglas)")
+    breakdown: list[BestTeamAxisItem]
+
+
+class RoleRef(BaseModel):
+    role_id: int
+    role_code: str
+    role_label: str
+    score: float
+
+
+class BestTeamsResponse(BaseModel):
+    player_id: int
+    player_name: str
+    role_id: int | None = None
+    role_code: str | None = None
+    role_label: str | None = None
+    role_score: float | None = Field(None, description="fijo: el mismo para todos los equipos")
+    available_roles: list[RoleRef] = Field(
+        default_factory=list, description="roles con score; se puede forzar uno con ?role_id="
+    )
+    w_role: float | None = None
+    w_style: float | None = None
+    note: str
+    count: int
+    ranking: list[BestTeamItem] = Field(description="ordenado por score descendente")

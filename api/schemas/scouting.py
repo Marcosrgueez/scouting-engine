@@ -44,6 +44,7 @@ class TacticalFitResponse(BaseModel):
     role_label: str
     formation: str | None = Field(description="null = se usó el agregado del equipo")
     n_matches: int | None = Field(description="partidos que sostienen el perfil de estilo usado")
+    team_narrative: str = Field(description="descripción del estilo del equipo por reglas (Fase 11), sin LLM")
     w_role: float
     w_style: float
     count: int

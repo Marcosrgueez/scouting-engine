@@ -1070,3 +1070,127 @@ smoke test). Deps: react-router-dom; dev: vitest, jsdom, testing-library.
 Young Talent / potencial (Fase 12, sin endpoint); deploy (auth, "per
 domain" de Sportmonks); 2ª División. Con Fases 0-10 el proyecto está
 completo de extremo a extremo: datos → análisis → API → interfaz.
+
+## 2026-08-31 — Fase 11: foto, resumen narrativo, fit invertido, estilo de equipo
+
+Funciones nuevas sobre LaLiga 2024/25 (validar contra datos conocidos
+antes de migrar a 2025/26 + Segunda en la Fase 12). Los resúmenes son
+**por reglas, sin LLM** — deterministas y auditables, como el resto.
+
+### 1. Foto del jugador
+
+`photo_url` (100% completo desde Fase 0) → `<img>` en la cabecera de la
+ficha. Sin cambios de backend. CSS: 64px, `object-fit: cover`, fondo
+`--surface-2` (los PNG cutout de Sportmonks se ven bien sobre oscuro).
+
+### 2. Resumen de función del jugador — `analysis/narrative.py::player_role_summary`
+
+Plantilla exacta:
+> `{nombre} se perfila como {rol_label} (score {score:.1f}): destaca en {m1} (percentil {p1:.0f}), {m2} (percentil {p2:.0f}) y {m3} (percentil {p3:.0f}).`
+
+(2 métricas → "en A y B."; 3 → "en A, B y C."). Lógica: rol de mayor
+score del jugador (de `player_role_scores`) → métricas tier `core` de ese
+rol ordenadas por `contribution` desc (de `player_role_score_breakdown`),
+top 3.
+
+Sin rol:
+> `Sin rol táctico definido — posición fuera del alcance actual de roles (delantero o portero), o minutos insuficientes en la temporada.`
+
+Expuesto en `GET /players/{id}` como campo `summary` (objeto: `text`,
+`has_role`, `role_code/label/score`, `drivers[]`). No hay endpoint nuevo.
+
+### 3. Tactical Fit invertido — `GET /players/{id}/best-teams`
+
+Reutiliza `tactical_fit(db, player_id=X, role_code=Y)` **sin duplicar
+lógica** — esa función ya soporta iterar equipos cuando `team_id=None`.
+El servicio: resuelve el rol (mayor score, o `?role_id=` si el jugador lo
+tiene → si no, 422 con los roles que sí tiene), llama a `tactical_fit`,
+adjunta `team_narrative` a cada equipo (de `_team_narratives`, un solo
+SELECT de los ejes agregados). Devuelve `available_roles[]` para que el
+frontend deje cambiar de rol. Jugador sin rol → ranking vacío + nota.
+
+### 4. Entrenador — INVESTIGADO, NO se persiste
+
+Ver `data-experiment/docs/fase11_coach_investigation.md`. Resumen:
+
+- El único endpoint es `/teams/{id}?include=coaches.coach` (no hay
+  season-scoped; `include=coaches` da 404 en fixtures/squads).
+- Da nombre y `coach_id`, pero **las fechas `start`/`end` de tenencia
+  están sistemáticamente mal en los límites**: Real Madrid → Ancelotti
+  `end: 2024-12-17` (real: mayo 2025); **Osasuna → Vicente Moreno
+  `end: 2024-08-07`, 8 días antes de empezar la temporada**.
+- Una heurística de solape con la ventana de temporada da ~14/20 bien,
+  ~4/20 "el entrenador de la 2ª vuelta", y **Osasuna sin candidato**.
+- **Decisión: no se crea la tabla `team_coaches`.** El dato es poco
+  fiable para fijar el entrenador de una temporada pasada — coherente con
+  cómo el proyecto trata el dato flojo (Pressing Forward, xG,
+  preferred_foot). La narrativa usa solo el nombre del equipo.
+
+### 5. Narrativa de estilo de equipo — `analysis/narrative.py::team_style_narrative`
+
+Umbrales de percentil: **≥70 "alto", ≤30 "bajo"**, resto sin mención.
+Se combinan los **1-2 ejes más alejados del percentil 50**. Frases por
+eje (alto / bajo):
+
+| eje | alto | bajo |
+|---|---|---|
+| possession | domina la posesión | juega la mayor parte del tiempo sin balón |
+| pass_accuracy | circula el balón con mucha precisión | tiene poca precisión de pase |
+| crossing_frequency | ataca sobre todo por bandas, con muchos centros | apenas centra al área |
+| press_intensity | es muy activo en acciones defensivas (entradas e intercepciones) | hace pocas acciones defensivas |
+| directness | juega directo, con mucho balón largo | elabora desde atrás, con poco balón largo |
+
+Plantilla:
+> `El {equipo} {frase_eje1} y {frase_eje2}.`  (1 eje → sin "y"; 0 ejes extremos → `"El {equipo} no muestra un rasgo de estilo marcado: todos los ejes quedan cerca de la media de la liga."`)
+
+Misma función usada en `GET /teams/{id}/style` (`narrative`), en
+`POST /scouting/tactical-fit` (`team_narrative`) y en `/players/{id}/best-teams`
+(por equipo). No se duplica la plantilla.
+
+### Validación de sanidad
+
+- **Resumen Camavinga:** *"Eduardo Camavinga se perfila como Ball Winner
+  (score 90.1): destaca en entradas (percentil 100), duelos ganados
+  (percentil 100) e intercepciones (percentil 91)."* — coincide con Fase 5.
+- **Resumen Iago Aspas (delantero) / David Soria (portero):** *"Sin rol
+  táctico definido — …"*, `has_role: false`. El campo aparece, no falla.
+- **Fit invertido Camavinga (Ball Winner):** top-5 = Dep. Alavés (92.3),
+  Sevilla, Betis, Leganés, Rayo — todos de alta actividad defensiva.
+  **Dep. Alavés 92.3 es idéntico al número de la validación de Fase 8**
+  en dirección normal. Bottom: Barça 63.8 (también = Fase 8). `?role_id=3`
+  (Advanced Playmaker) → top Osasuna (equipo de centros). Distinto ranking.
+- **Narrativa Barça:** *"El FC Barcelona domina la posesión y elabora
+  desde atrás, con poco balón largo."* — posesión p97.5, directitud p2.5.
+  Correcto. Getafe: *"…tiene poca precisión de pase y juega directo, con
+  mucho balón largo."* Las Palmas: *"…no muestra un rasgo de estilo
+  marcado…"* (equipo del montón). Los 20 leídos, todos coherentes.
+
+### Frontend
+
+Todo integrado en las pantallas de Fase 10 con los mismos tokens:
+- **Ficha de jugador:** cabecera `.player-hero` con foto + nombre + meta;
+  `.player-summary` (lead con regla lateral ámbar, gris si "sin rol");
+  nueva sección "Mejores equipos para este perfil" (tabla como la de
+  similares, filas expandibles con la narrativa + el desglose por eje,
+  `<select>` de rol si el jugador tiene varios).
+- **Perfil de equipo:** `.player-summary` con la narrativa bajo el
+  `<select>` de equipo.
+- **Encaje táctico:** la narrativa del equipo bajo el resumen del query.
+
+Smoke test (`npm test`, vitest+jsdom): 5/5, ahora cubren foto
+(`img.player-photo`), texto del resumen, "Mejores equipos" con Dep. Alavés
+92.3, y las dos narrativas de equipo.
+
+### Cambios
+
+- `analysis/narrative.py` (nuevo). `api/services/players.py` +`get_best_teams`
+  + `summary` en el perfil. `api/services/teams.py` + `narrative`.
+  `api/services/scouting.py` + `team_narrative`. Routers + schemas.
+- Frontend: `PlayerProfile.jsx` reescrito (foto/resumen/best-teams),
+  `TeamProfile.jsx` + `TacticalFit.jsx` + narrativa, `api.js` +
+  `playerBestTeams`, `styles.css` + `.player-hero/.player-photo/.player-summary`.
+- `data-experiment/docs/fase11_coach_investigation.md` (nuevo, no es repo git).
+
+**Pendientes (Fase 12):** migración a 2025/26 + Segunda División (2ª pasada
+del ETL con otro `season_id`); reconsiderar el entrenador solo para la
+temporada EN CURSO (donde `active: true` sí es correcto).
