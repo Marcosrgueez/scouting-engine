@@ -20,7 +20,7 @@ class PlayerListItem(BaseModel):
     team_id: int | None = None
     team_name: str | None = None
     age: int | None = None
-    minutes: int = Field(description="minutos totales en LaLiga 24/25 (suma de todas sus etapas)")
+    minutes: int = Field(description="minutos totales del jugador esa competición-temporada (suma de sus etapas)")
     birth_date: datetime.date | None = None
     nationality: str | None = None
     height_cm: int | None = None
@@ -65,6 +65,8 @@ class RoleSummary(BaseModel):
 class PlayerProfile(BaseModel):
     id: int
     name: str
+    season: str
+    competition: str
     bucket: str | None = None
     side: str | None = None
     position_label: str | None = None
@@ -167,6 +169,8 @@ class RoleRef(BaseModel):
 class BestTeamsResponse(BaseModel):
     player_id: int
     player_name: str
+    season: str
+    competition: str
     role_id: int | None = None
     role_code: str | None = None
     role_label: str | None = None

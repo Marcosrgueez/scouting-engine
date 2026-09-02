@@ -1,11 +1,12 @@
 // Cliente de la API. Sin auth, CORS abierto.
-// Fase 12a: temporada global. setSeason() la fija; se añade ?season= a todo.
+// Fase 12a/12b: (competición, temporada) global. setSeason() la fija con el
+// id interno de temporada (inequívoco entre ligas); se añade ?season= a todo.
 
 const BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
-let _season = null // nombre de temporada, ej '2025/2026'; null = default del backend
-export function setSeason(name) {
-  _season = name || null
+let _season = null // id interno de temporada; null = default del backend
+export function setSeason(id) {
+  _season = id === null || id === undefined || id === '' ? null : id
 }
 export function getSeason() {
   return _season

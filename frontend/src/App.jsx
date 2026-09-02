@@ -8,22 +8,33 @@ import TacticalFit from './pages/TacticalFit'
 
 function Layout({ children }) {
   const [seasons, setSeasons] = useState([])
-  const [season, setSeasonName] = useState(null)
+  const [season, setSeasonId] = useState(null)
 
   useEffect(() => {
     api
       .seasons()
       .then((d) => {
         setSeasons(d.items)
-        setSeasonName(d.default)
+        setSeasonId(String(d.default))
         setSeason(d.default)
       })
       .catch(() => {})
   }, [])
 
   const onChange = (e) => {
-    setSeasonName(e.target.value)
+    setSeasonId(e.target.value)
     setSeason(e.target.value)
+  }
+
+  // agrupadas por competición para el <optgroup> (solo las que existen)
+  const groups = []
+  for (const s of seasons) {
+    let g = groups.find((x) => x.competition === s.competition)
+    if (!g) {
+      g = { competition: s.competition, tier: s.tier, items: [] }
+      groups.push(g)
+    }
+    g.items.push(s)
   }
 
   return (
@@ -45,12 +56,16 @@ function Layout({ children }) {
         </nav>
         {seasons.length > 1 && (
           <label className="season-picker">
-            temporada
+            {groups.length > 1 ? 'competición' : 'temporada'}
             <select value={season || ''} onChange={onChange}>
-              {seasons.map((s) => (
-                <option key={s.id} value={s.name}>
-                  {s.name}
-                </option>
+              {groups.map((g) => (
+                <optgroup key={g.competition} label={g.competition}>
+                  {g.items.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {groups.length > 1 ? `${g.competition} · ${s.name}` : s.name}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </label>

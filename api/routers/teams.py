@@ -13,7 +13,7 @@ from db.models import Season
 router = APIRouter(prefix="/teams", tags=["teams"])
 
 
-@router.get("", response_model=TeamListResponse, summary="Equipos de LaLiga en la temporada")
+@router.get("", response_model=TeamListResponse, summary="Equipos de la competición en la temporada")
 def list_teams(db: Session = Depends(get_db), season: Season = Depends(resolve_season)):
     return svc.list_teams(db, season)
 

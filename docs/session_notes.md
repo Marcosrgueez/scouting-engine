@@ -1321,3 +1321,137 @@ styles.css, smoke.test.jsx.
 Sportmonks (cambiar una liga / add-on / upgrade). El pipeline ya está
 listo: `scripts/10 --season-id <segunda>` + `etl_laliga --season-dir` +
 `analysis --season-id` + la API ya es multi-temporada.
+
+## 2026-09-02 — Fase 12b: cargar Segunda División 2025/26 + multi-competición
+
+Precedida por la re-validación (acceso reconfigurado: se sacó Ligue 1, entró
+LaLiga 2). Segunda 25/26 = sportmonks season_id **25673**, league_id **567**,
+tier 2. Internamente **season_id 7**.
+
+### 1. Decisión de esquema — la competición pasa de `teams` a `seasons`
+
+`teams.competition_id` era un atributo FIJO del equipo: incorrecto (Valladolid
+juega Primera en 24/25 y Segunda en 25/26) y además **columna muerta** (ni
+`analysis/` ni `api/` la leían; el scoping por competición ya vivía en
+`player_team_season.competition_id` y `team_fixtures.competition_id`). El
+problema real: dos `seasons` distintas (LaLiga 25/26 y Segunda 25/26) con el
+mismo `name` "2025/2026" rompían `resolve_season`, `/seasons` y el selector.
+
+- **`seasons.competition_id` NOT NULL** (un `season_id` de Sportmonks es
+  siempre de una liga) + `uq_season_competition_name (competition_id, name)`.
+- **`teams.competition_id` eliminada.**
+- `db/migrate_fase12b.py` (sin Alembic): ADD columna, BACKFILL las 2 filas
+  existentes -> La Liga, SET NOT NULL, ADD unique, DROP teams.competition_id.
+  Idempotente. **Aplicada.** No toca datos de jugador/equipo/fixtures.
+- `analysis/` y el esquema derivado **sin cambios** (ya scopeaban por
+  `season_id`/`competition_id`).
+
+### 2. ETL
+
+- `scripts/10_fetch_season.py`: escribe `tier` en context.json (`{564:1, 567:2}`).
+  `--season-id 25673 --league-id 567` -> `raw_data/sportmonks/s25673/`.
+  Descarga real: 834 jugadores (cuota Player 2000 -> 1200), 468 fixtures.
+- `loaders/schemas.py`: `Context.tier`.
+- `etl_laliga.py`: competición sobre la temporada (no el equipo); tier del
+  context (fallback por league_id para el layout plano de 24/25); **salta
+  equipos sin plantilla** (`_roster_team_ids`) -> "TBC" fuera; upsert de
+  `teams` por `sportmonks_team_id` **sin competition_id** (dedup: Valladolid
+  = sm 361, se reutiliza la fila de LaLiga).
+- `etl_team_fixtures.py`: `competition = session.get(Competition, season.competition_id)`
+  en vez de `select(Competition)` "el primero que haya" (era un bug con 2
+  competiciones cargadas).
+- Carga: 834 jugadores, 859 `player_team_season`, 30196 stats. 936
+  `team_fixtures` (468 partidos, incluye ~6 de playoff de ascenso), todos
+  con formación y stats.
+
+### 3. Recálculo analítico (scoped `--season-id 7`)
+
+| tabla | valor |
+|---|---|
+| player_percentiles | 12979 (379 jugadores >= 900 min) |
+| player_role_scores | 570 (307 jugadores; **0 descartados por cobertura** — el guard del 60% no se acerca pese a `through-balls` ausente) |
+| player_similarity | 7580 |
+| team_fixtures | 936 |
+| team_style_axes | 340 (22 agregados + formaciones) |
+
+`through-balls` en Segunda: 859/859 filas imputadas a 0 (uniforme) -> cero
+efecto en el ranking dentro de Segunda, como se predijo en la investigación.
+
+### 4. API — `?competition=` + default por tier
+
+- `resolve_season`: `season` por id interno / `sportmonks_season_id` (siempre
+  inequívocos) o nombre (solo si es único); nombre repetido -> **409**
+  pidiendo `?competition=` (id / `sportmonks_league_id` / nombre). Default =
+  temporada más reciente de la competición de **menor tier** (así el default
+  sigue siendo LaLiga 25/26, no Segunda, aunque Segunda acabe más tarde:
+  end_date 2026-06-20 vs 2026-05-24).
+- `_all_seasons` ordena por `competition.tier ASC, end_date DESC`.
+- `/seasons`: cada item lleva `competition` / `competition_id` / `tier`;
+  `default` pasa a ser el **id** de la temporada (no el nombre).
+- `competition` añadido a las respuestas que llevan `season`
+  (`/players/{id}`, `/players/{id}/best-teams`, `/teams`, `/teams/{id}/style`,
+  `/scouting/tactical-fit`) + a los schemas. Textos "cada equipo de LaLiga"
+  -> "cada equipo de {competición}"; el note de best-teams avisa "el ranking
+  no cruza competiciones (sin League Strength Coefficient todavía)".
+
+### 5. Frontend
+
+- `api.js`: la temporada global es el **id interno** (inequívoco), no el
+  nombre.
+- `App.jsx`: `<select>` con `<optgroup>` por competición; opciones
+  "La Liga · 2025/2026" cuando hay >1 competición, solo el nombre si no.
+  `default` (id) del backend.
+- `TeamProfile.jsx`: "N perfiles — {d.competition} {d.season}" y "percentil
+  entre los equipos de {competición} {temporada}" en vez de "LaLiga 2024/25"
+  / "los 20 equipos de LaLiga" hardcodeados.
+
+### Validación de sanidad
+
+**Dedup (crítico):**
+- filas `teams` duplicadas por `sportmonks_team_id`: **0**. Total teams
+  23 -> **42** (19 nuevos de Segunda; 3 descendidos reutilizados).
+- Valladolid id=6 sm=361: `player_team_season` LaLiga=43 / Segunda=44;
+  `team_fixtures` LaLiga=38 / Segunda=42. Leganés y Las Palmas igual. Sin
+  mezclarse.
+- Pools de percentiles: LaLiga 24/25 11496 · LaLiga 25/26 11765 · Segunda
+  12979, cada uno con `n_comp_ids = 1`; **0 filas con `competition_id`
+  incoherente** entre `player_percentiles` y su `season`.
+
+**Sentinels Fase 12a intactos:** Camavinga BW 24/25 = **90.12**, Pedri DLP
+24/25 = **90.00**, Pedri DLP 25/26 = **95.49**. Counts 24/25 y LaLiga 25/26
+byte a byte iguales (pctl/roles/sim/fx/tsa).
+
+**Jugadores de Segunda 25/26 a ojo (Almería):**
+- Sergio Arribas (cedido del Atleti, ~20 G+A, el mejor de la categoría):
+  **Advanced Playmaker 84.0** (pases clave p97, asistencias p~), DLP 53.9,
+  BW 16.8. Correcto.
+- Nico Melamed AP **86.9** — extremo creativo, temporada fuerte. Correcto.
+- Arnau Puigmal AP 77.9; Dion Lopy (pivote) BW 68.0; Nélson Monte BPCB 45.5.
+- Top-5 AP: Israel Suero 94.1, Álex Calatrava 92.0, Dani Rodríguez 89.1.
+- Top-5 BW: Amatucci 84.5, Sergio Álvarez 84.3, Stanko Jurić 83.3 (pivotes
+  reconocibles de la categoría).
+
+**API:** `/seasons` default=3 (LaLiga 25/26, tier 1). `/players?season=7` =
+389 jugadores de Segunda. `/teams?season=7` = "La Liga 2" 22 equipos, sin
+Madrid/Barça. `?season=2025/2026` -> 409; `+ &competition=La Liga 2` ->
+Segunda. best-teams de un jugador de Segunda rankea solo equipos de Segunda.
+
+Smoke test (`npm test`): **7/7** (nuevo: "Segunda 25/26: competición
+separada — /teams no cruza con Primera"). `npm run build` + `npm run lint`
+limpios.
+
+### Código
+
+`db/`: models (seasons.competition_id, teams sin competición),
+migrate_fase12b.py (nuevo), create_schema (docstring). `loaders/`:
+schemas (Context.tier), etl_laliga (competición en season, skip sin
+plantilla, dedup), etl_team_fixtures (competición desde la temporada).
+`api/`: dependencies (resolve_season + ?competition= + default por tier),
+routers/seasons (competition/tier, default=id), services
+(players/teams/scouting: +competition), schemas (+competition). Frontend:
+api.js, App.jsx (optgroup), pages/TeamProfile.jsx, smoke.test.jsx.
+`data-experiment/scripts/10_fetch_season.py` (tier) + crudo en `s25673/`.
+
+**Pendiente / futuro:** League Strength Coefficient para poder comparar un
+jugador de Segunda contra el estilo/nivel de un equipo de Primera en el
+mismo ranking (hoy los rankings no cruzan competición a propósito).

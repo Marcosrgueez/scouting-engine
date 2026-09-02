@@ -202,6 +202,7 @@ def get_player_profile(db: Session, season: Season, player_id: int) -> dict:
 
     return {
         "id": p.id, "name": p.name, "bucket": row.bucket, "side": row.side,
+        "season": season.name, "competition": season.competition.name,
         "position_label": row.position_label, "team_id": row.team_id, "team_name": row.team_name,
         "age": _age_of(p.birth_date, ref), "birth_date": p.birth_date, "nationality": p.nationality,
         "height_cm": p.height_cm, "weight_kg": p.weight_kg, "preferred_foot": p.preferred_foot,
@@ -359,10 +360,12 @@ def get_best_teams(db: Session, season: Season, player_id: int, *, role_id: int 
 
     if not scored:
         return {
-            "player_id": p.id, "player_name": p.name, "role_id": None, "role_code": None,
+            "player_id": p.id, "player_name": p.name,
+            "season": season.name, "competition": season.competition.name,
+            "role_id": None, "role_code": None,
             "role_label": None, "role_score": None, "available_roles": [],
-            "note": f"Sin role score en {season.name}: posición fuera de los 4 roles, umbral de "
-            "minutos no alcanzado, o no jugó esa temporada.",
+            "note": f"Sin role score en {season.competition.name} {season.name}: posición fuera de "
+            "los 4 roles, umbral de minutos no alcanzado, o no jugó esa temporada.",
             "count": 0, "ranking": [],
         }
 
@@ -394,10 +397,13 @@ def get_best_teams(db: Session, season: Season, player_id: int, *, role_id: int 
         for r in results
     ]
     return {
-        "player_id": p.id, "player_name": p.name, "role_id": chosen.role_id, "role_code": chosen.code,
+        "player_id": p.id, "player_name": p.name,
+        "season": season.name, "competition": season.competition.name,
+        "role_id": chosen.role_id, "role_code": chosen.code,
         "role_label": chosen.label, "role_score": float(chosen.score), "available_roles": available,
         "w_role": w_role, "w_style": w_style,
-        "note": "Encaje del jugador en cada equipo de LaLiga con su rol. role_score fijo; lo que "
-        "cambia el orden es el estilo del equipo.",
+        "note": f"Encaje del jugador en cada equipo de {season.competition.name} ({season.name}) con "
+        "su rol. role_score fijo; lo que cambia el orden es el estilo del equipo. El ranking no "
+        "cruza competiciones (sin League Strength Coefficient todavía).",
         "count": len(ranking), "ranking": ranking,
     }

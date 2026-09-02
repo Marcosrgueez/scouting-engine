@@ -1,7 +1,9 @@
 """Crea el esquema en la base de datos apuntada por DATABASE_URL.
 
 Sin Alembic todavia: esto es create_all() + poblacion de los catalogos
-estaticos (positions, stat_types).
+estaticos (positions, stat_types). create_all() crea tablas que falten
+pero NO altera tablas existentes -> para cambios de esquema sobre una BD
+ya poblada hay scripts de migracion manual (db/migrate_fase12b.py).
 
 Uso:
     python -m db.create_schema            # crea lo que falte

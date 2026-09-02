@@ -84,7 +84,7 @@ def get_roles(
 @router.get(
     "/{player_id}/best-teams",
     response_model=BestTeamsResponse,
-    summary="Tactical Fit invertido: ranking de equipos de LaLiga por encaje del jugador",
+    summary="Tactical Fit invertido: ranking de equipos de su competición por encaje del jugador",
 )
 def get_best_teams(
     player_id: int,

@@ -3,14 +3,18 @@
 Motor de scouting de fútbol. Código de producción del proyecto (el
 experimento de validación de datos vive aparte, en `../data-experiment/`).
 
-**Fase actual: 12a — multi-temporada.** LaLiga **2024/25 y 2025/26**
-conviven en las mismas tablas (diferenciadas por `season_id`); la API y el
-frontend tienen selector de temporada (por defecto, la más reciente).
-Segunda División queda para la Fase 12b (pendiente de reconfigurar el plan
-de Sportmonks — ver `../data-experiment/docs/fase12_migration_investigation.md`).
+**Fase actual: 12b — multi-competición.** Conviven **LaLiga 2024/25 y
+2025/26** y **Segunda División 2025/26**, cada una como su propia fila de
+`seasons` (un `season_id` de Sportmonks es siempre de una liga → la
+competición vive en `seasons.competition_id`, NO en `teams`). Nada de
+`analysis/` cruza niveles de liga: percentiles, role scores, similarity y
+team style se calculan por `(competition_id, season_id)`. El selector del
+frontend agrupa por competición; por defecto, la temporada más reciente de
+la competición principal (menor tier). Ver
+`../data-experiment/docs/fase12_migration_investigation.md`.
 (Fases previas: 1 esquema, 2 ETL, 3 percentiles, 5 Player Role Score,
 6 Similarity Engine, 7 Team Style Profile, 8 Tactical Fit Score, 9 API,
-10 Frontend, 11 resúmenes narrativos.)
+10 Frontend, 11 resúmenes narrativos, 12a multi-temporada.)
 
 ## Requisitos
 
@@ -35,6 +39,9 @@ Copy-Item .env.example .env
 # Crear el esquema + poblar catálogos estáticos (positions, stat_types):
 python -m db.create_schema
 # (para empezar de cero: python -m db.create_schema --drop)
+# BD ya existente de antes de la Fase 12b: migrar el esquema (sin Alembic).
+python -m db.migrate_fase12b            # seasons.competition_id; drop teams.competition_id
+python -m db.migrate_fase12b --dry-run  # enseña el plan y hace rollback
 
 # Smoke test (Fase 1): cargar solo los 13 jugadores de prueba:
 python -m loaders.smoke_test_load
@@ -45,10 +52,14 @@ python -m loaders.etl_laliga                        # carga real (idempotente)
 # LaLiga 25/26 (Fase 12a): mismo pipeline, otra temporada. Convive con 24/25.
 #   1. descargar el crudo: cd ../data-experiment && python -m scripts.10_fetch_season --season-id 25659
 python -m loaders.etl_laliga --season-dir s25659    # DELETE scoped por season_id, no toca 24/25
+# Segunda División 25/26 (Fase 12b): mismo pipeline, otra competición.
+#   cd ../data-experiment && python -m scripts.10_fetch_season --season-id 25673 --league-id 567
+python -m loaders.etl_laliga --season-dir s25673    # competition/tier del context.json; salta equipos sin plantilla
 
 # ETL de partidos (Fase 7): team_fixtures + team_fixture_statistics.
 python -m loaders.etl_team_fixtures                                   # 24/25 (si es la unica temporada)
-python -m loaders.etl_team_fixtures --sportmonks-season-id 25659 --season-dir s25659   # 25/26
+python -m loaders.etl_team_fixtures --sportmonks-season-id 25659 --season-dir s25659   # LaLiga 25/26
+python -m loaders.etl_team_fixtures --sportmonks-season-id 25673 --season-dir s25673   # Segunda 25/26
 python -m loaders.etl_team_fixtures --sportmonks-season-id 23621 --offline             # 24/25 explicito
 
 # Analisis (Fases 3/5/6/8). Todos toman --season-id (id interno de la BD)
@@ -78,7 +89,7 @@ python -m analysis.tactical_fit --team "FC Barcelona" --role ball_winner --top 1
 python -m analysis.tactical_fit --player "Isco" --team "Osasuna" --by-formation --explain
 python -m analysis.tactical_fit --player "Rodri" --w-role 0.6 --w-style 0.4   # peso ajustable
 
-# API (Fase 9 + 12a): expone todo por HTTP. ?season= en cada endpoint
+# API (Fase 9 + 12a/12b): expone todo por HTTP. ?season= / ?competition= en cada endpoint
 # (id, sportmonks_season_id o nombre '2025/2026'); por defecto la mas reciente.
 python -m uvicorn api.main:app --reload        # -> http://127.0.0.1:8000/docs
 #   GET /seasons               -> temporadas cargadas (para el selector del frontend)
@@ -96,6 +107,7 @@ db/
   models.py          los 20 modelos SQLAlchemy
   seed_catalogs.py   datos estáticos de positions y stat_types
   create_schema.py   create_all() + seed (sin Alembic todavía)
+  migrate_fase12b.py migración manual: competición de teams -> seasons
 loaders/
   schemas.py            modelos Pydantic del JSON de Sportmonks (validacion + mapper)
   sportmonks_mapping.py  helpers JSON -> esquema interno (compartidos)
@@ -340,11 +352,15 @@ python -m uvicorn api.main:app --reload   # http://127.0.0.1:8000/docs
 poblaron). El Tactical Fit se calcula **en vivo por request** (función de
 Fase 8), no se cachea.
 
-**Fase 12a — `?season=`:** casi todos los endpoints aceptan `season`
-(id interno, `sportmonks_season_id` o nombre `'2025/2026'`); sin él, la
-temporada más reciente cargada. Cada consulta filtra por `season_id` — las
-dos temporadas nunca se mezclan. La edad se calcula a fin de la temporada
-consultada (no "hoy"). `/roles` es catálogo, no lleva `season`.
+**Fase 12a/12b — `?season=` / `?competition=`:** casi todos los endpoints
+aceptan `season` (id interno, `sportmonks_season_id` o nombre `'2025/2026'`);
+sin él, la temporada más reciente de la competición principal (menor tier).
+Como el nombre `'2025/2026'` existe en LaLiga y en Segunda, por nombre solo
+resuelve si es único; si no, la respuesta es **409** pidiendo `?competition=`
+(id, `sportmonks_league_id` o nombre) — o usa el `sportmonks_season_id`, que
+siempre es inequívoco. Cada consulta filtra por `season_id`, así que ninguna
+competición-temporada se mezcla con otra. La edad se calcula a fin de la
+temporada consultada (no "hoy"). `/roles` es catálogo, no lleva `season`.
 
 | Método | Ruta | Qué hace |
 |---|---|---|
@@ -384,9 +400,10 @@ por `GROUP BY`, que es el patrón de acceso que la Fase 7 diseñó.
 
 ## Esquema
 
-Catálogos: `competitions`, `seasons`, `teams`, `positions`, `stat_types`,
-`roles`, `role_buckets`, `role_weights`, `team_stat_types`,
-`role_style_weights`.
+Catálogos: `competitions`, `seasons` (cada una de UNA competición vía
+`competition_id`), `teams` (sin competición: la división depende de la
+temporada), `positions`, `stat_types`, `roles`, `role_buckets`,
+`role_weights`, `team_stat_types`, `role_style_weights`.
 Entidades: `players`, `player_team_season`, `player_statistics`,
 `team_fixtures`, `team_fixture_statistics`.
 Derivado (Fase 3): `player_percentiles`.

@@ -295,7 +295,9 @@ def run(dry_run=False, refetch=False, offline=False, sportmonks_season_id=None, 
                     f"(disponibles: {[(s.name, s.sportmonks_season_id) for s in seasons]})."
                 )
             season = seasons[0] if seasons else None
-        competition = session.scalar(select(Competition))
+        # Fase 12b: la competición sale de la temporada, no de "la primera
+        # que haya" (con LaLiga + Segunda cargadas eso era un bug).
+        competition = session.get(Competition, season.competition_id) if season else None
         if season is None or competition is None:
             raise RuntimeError("Faltan season/competition. Ejecuta la Fase 2 (loaders.etl_laliga) primero.")
 

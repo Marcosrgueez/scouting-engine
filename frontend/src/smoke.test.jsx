@@ -9,7 +9,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, expect, test } from 'vitest'
 
-import { setSeason } from './api'
+import { api, setSeason } from './api'
 import PlayerSearch from './pages/PlayerSearch'
 import PlayerProfile from './pages/PlayerProfile'
 import TeamProfile from './pages/TeamProfile'
@@ -60,7 +60,7 @@ test('equipo 25/26: narrativa + formaciones + muestra insuficiente (Atlético)',
 })
 
 test('encaje táctico 24/25 preservado: Ball Winner en Dep. Alavés = Camavinga 92.3', async () => {
-  setSeason('2024/2025')
+  setSeason(1) // LaLiga 2024/25 (id interno)
   const user = (await import('@testing-library/user-event')).default.setup()
   mount('/fit', <Route path="/fit" element={<TacticalFit />} />)
   await waitFor(() => expect(screen.getByText('Deportivo Alavés')).toBeDefined(), { timeout: 5000 })
@@ -78,12 +78,34 @@ test('encaje táctico 24/25 preservado: Ball Winner en Dep. Alavés = Camavinga 
 })
 
 test('cambio de temporada: mismo jugador, score distinto (Camavinga BW 90.1 vs 79.0)', async () => {
-  setSeason('2024/2025')
+  setSeason(1) // LaLiga 24/25
   const { unmount } = mount('/players/396', <Route path="/players/:id" element={<PlayerProfile />} />)
   await waitFor(() => expect(screen.getByText(/score 90\.1\)/)).toBeDefined(), { timeout: 5000 })
   unmount()
 
-  setSeason('2025/2026')
+  setSeason(3) // LaLiga 25/26
   mount('/players/396', <Route path="/players/:id" element={<PlayerProfile />} />)
   await waitFor(() => expect(screen.getByText(/score 79\.0\)/)).toBeDefined(), { timeout: 5000 })
+})
+
+test('Segunda 25/26: competición separada — /teams no cruza con Primera', async () => {
+  const d = await api.seasons()
+  const segunda = d.items.find((s) => s.tier === 2)
+  const primera = d.items.find((s) => s.tier === 1)
+  expect(segunda).toBeDefined()
+
+  setSeason(segunda.id)
+  const seg = await api.teams()
+  expect(seg.competition).toBe(segunda.competition)
+  const segNames = seg.items.map((t) => t.name)
+  expect(segNames.length).toBeGreaterThan(15)
+  expect(segNames).not.toContain('Real Madrid')
+  expect(segNames).not.toContain('FC Barcelona')
+
+  setSeason(primera.id)
+  const pri = await api.teams()
+  const priNames = pri.items.map((t) => t.name)
+  // los descendidos (Valladolid/Leganés/Las Palmas) están en Segunda, no en Primera 25/26
+  const overlap = segNames.filter((n) => priNames.includes(n))
+  expect(overlap.length).toBe(0)
 })

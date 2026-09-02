@@ -110,6 +110,21 @@ def _roster_player_ids(sm_dir=_SM_DIR):
     return sorted(ids)
 
 
+def _roster_team_ids(sm_dir=_SM_DIR):
+    """sportmonks_team_id de los equipos CON plantilla poblada (>=1 jugador).
+
+    Fase 12b: teams.json de Segunda trae un placeholder "TBC" y puede traer
+    filiales sin plantilla; esos no deben entrar en `teams`.
+    """
+    roster = _load_json(os.path.join(sm_dir, "players_raw.json"))
+    out = set()
+    for team in roster.get("teams", []):
+        rows = team.get("raw_response", {}).get("data", [])
+        if any((r.get("player") or {}).get("id") for r in rows):
+            out.add(team.get("team_id"))
+    return out
+
+
 def _sportmonks_token():
     # El token vive en el .env del experimento; solo se necesita si falta
     # algun archivo de stats y se pide --fetch-missing.
@@ -221,30 +236,47 @@ def run(dry_run=False, limit=None, only_players=None, fetch_missing=False, seaso
         }
 
         # --- competition + season (los crea el ETL desde context.json) ---
+        # Fase 12b: el tier viene del context (scripts/10). Fallback por
+        # league_id para el context plano de 2024/25, que no lo trae.
+        tier = context.tier if context.tier is not None else (2 if context.league_id == 567 else 1)
         competition_id = _upsert_returning_id(
             session, Competition,
-            {"name": context.league_name, "country": "Spain", "tier": 1,
+            {"name": context.league_name, "country": "Spain", "tier": tier,
              "sportmonks_league_id": context.league_id},
             ["sportmonks_league_id"], ["name", "country", "tier"],
         )
+        # Fase 12b: la competición vive en la temporada (un season_id de
+        # Sportmonks es siempre de una liga).
         season_id = _upsert_returning_id(
             session, Season,
             {"name": context.season_name or "2024/2025",
+             "competition_id": competition_id,
              "start_date": context.start_date or datetime.date(2024, 8, 15),
              "end_date": context.end_date or datetime.date(2025, 5, 25),
              "sportmonks_season_id": context.season_id},
-            ["sportmonks_season_id"], ["name", "start_date", "end_date"],
+            ["sportmonks_season_id"], ["name", "competition_id", "start_date", "end_date"],
         )
 
-        # --- teams (los 20 de teams.json) ---
+        # --- teams (solo los que tienen plantilla poblada) ---
+        # Fase 12b: sin competition_id (la división vive en la temporada). El
+        # upsert por sportmonks_team_id reutiliza la fila si el equipo ya
+        # existe de otra temporada/liga (p.ej. Valladolid: LaLiga 24/25 ->
+        # Segunda 25/26) sin duplicar.
+        roster_team_ids = _roster_team_ids(sm_dir)
         team_id_by_sm = {}
+        skipped_teams = []
         for traw in teams_raw:
+            if roster_team_ids and traw.id not in roster_team_ids:
+                skipped_teams.append(traw.name)
+                continue
             team_id_by_sm[traw.id] = _upsert_returning_id(
                 session, Team,
                 {"name": traw.name, "country": COUNTRY_BY_ID.get(traw.country_id),
-                 "competition_id": competition_id, "sportmonks_team_id": traw.id},
-                ["sportmonks_team_id"], ["name", "country", "competition_id"],
+                 "sportmonks_team_id": traw.id},
+                ["sportmonks_team_id"], ["name", "country"],
             )
+        if skipped_teams:
+            log.info("equipos sin plantilla, omitidos: %s", skipped_teams)
 
         # --- jugadores ---
         for i, sm_pid in enumerate(target_ids, 1):
@@ -329,7 +361,6 @@ def run(dry_run=False, limit=None, only_players=None, fetch_missing=False, seaso
                         session, Team,
                         {"name": traw.name if traw else f"team-{entry.team_id}",
                          "country": COUNTRY_BY_ID.get(traw.country_id) if traw else None,
-                         "competition_id": competition_id,
                          "sportmonks_team_id": entry.team_id},
                         ["sportmonks_team_id"], ["name"],
                     )

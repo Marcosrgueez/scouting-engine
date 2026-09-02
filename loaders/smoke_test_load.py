@@ -110,7 +110,6 @@ def _get_or_create_team(session, teams_by_sm_id, cache, competition, sportmonks_
         team = Team(
             name=raw.get("name", "team-" + str(sportmonks_team_id)),
             country=COUNTRY_BY_ID.get(raw.get("country_id")),
-            competition_id=competition.id,
             sportmonks_team_id=sportmonks_team_id,
         )
         session.add(team)
@@ -181,6 +180,7 @@ def main():
         if season is None:
             season = Season(
                 name=context.get("season_name", "2024/2025"),
+                competition_id=competition.id,
                 start_date=datetime.date(2024, 8, 15),
                 end_date=datetime.date(2025, 5, 25),
                 sportmonks_season_id=context["season_id"],

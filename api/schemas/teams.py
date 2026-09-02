@@ -14,13 +14,14 @@ class TeamListItem(BaseModel):
 
 class TeamListResponse(BaseModel):
     season: str
+    competition: str
     items: list[TeamListItem]
 
 
 class StyleAxisItem(BaseModel):
     style_axis: str = Field(description="possession/pass_accuracy/crossing_frequency/press_intensity/directness")
     raw_value: float = Field(description="valor bruto del eje (posesión media %, centros/partido, ratio*100...)")
-    percentile: float = Field(description="0-100 entre los 20 equipos de LaLiga (pool = agregados de equipo)")
+    percentile: float = Field(description="0-100 entre los equipos de esa competición y temporada (pool = agregados de equipo)")
 
 
 class TeamStyleProfile(BaseModel):
@@ -38,6 +39,7 @@ class TeamStyleResponse(BaseModel):
     team_id: int
     team_name: str
     season: str
+    competition: str
     min_matches: int = Field(description="umbral de partidos por formación (Fase 7); por debajo no hay perfil de estilo")
     narrative: str = Field(description="descripción del estilo por reglas (Fase 11), sin LLM")
     aggregate: TeamStyleProfile

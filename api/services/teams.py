@@ -28,6 +28,7 @@ def list_teams(db: Session, season: Season) -> dict:
     ).scalars().all()
     return {
         "season": season.name,
+        "competition": season.competition.name,
         "items": [
             {"id": t.id, "name": t.name, "country": t.country, "sportmonks_team_id": t.sportmonks_team_id}
             for t in rows
@@ -83,6 +84,7 @@ def get_team_style(db: Session, season: Season, team_id: int) -> dict:
         "team_id": team.id,
         "team_name": team.name,
         "season": season.name,
+        "competition": season.competition.name,
         "min_matches": STYLE_MIN_MATCHES,
         "narrative": team_style_narrative(aggregate["axes"], team.name),
         "aggregate": aggregate,

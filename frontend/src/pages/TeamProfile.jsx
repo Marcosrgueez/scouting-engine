@@ -35,7 +35,11 @@ export default function TeamProfile() {
     <div>
       <div className="page-head">
         <h1 className="t-xl">Estilo de equipo</h1>
-        {d && <span className="count">{d.by_formation.length + 1} perfiles — LaLiga 2024/25</span>}
+        {d && (
+          <span className="count">
+            {d.by_formation.length + 1} perfiles — {d.competition} {d.season}
+          </span>
+        )}
       </div>
 
       <div className="filters">
@@ -94,8 +98,8 @@ export default function TeamProfile() {
           )}
 
           <p className="t-meta" style={{ marginTop: 22 }}>
-            Percentil entre los 20 equipos de LaLiga. Un valor alto no es "mejor": es lo que
-            hace ese equipo (posesión alta, presión baja…).
+            Percentil entre los equipos de {d.competition} {d.season}. Un valor alto no es "mejor":
+            es lo que hace ese equipo (posesión alta, presión baja…).
           </p>
         </div>
       )}

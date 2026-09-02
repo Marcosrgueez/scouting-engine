@@ -93,29 +93,41 @@ class Competition(Base):
     tier: Mapped[Optional[int]] = mapped_column(Integer)
     sportmonks_league_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
 
-    teams: Mapped[list["Team"]] = relationship(back_populates="competition")
+    seasons: Mapped[list["Season"]] = relationship(back_populates="competition")
 
 
 class Season(Base):
+    """Una campaña de UNA competición (un season_id de Sportmonks es siempre
+    de una sola liga). La competición vive aquí, NO en `teams`: un equipo
+    puede estar en Primera una temporada y en Segunda otra (Fase 12b). El
+    resto del motor ya trata `season_id` como la unidad liga-temporada."""
+
     __tablename__ = "seasons"
+    __table_args__ = (
+        UniqueConstraint("competition_id", "name", name="uq_season_competition_name"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(40), nullable=False)
+    competition_id: Mapped[int] = mapped_column(ForeignKey("competitions.id"), nullable=False)
     start_date: Mapped[Optional[datetime.date]] = mapped_column(Date)
     end_date: Mapped[Optional[datetime.date]] = mapped_column(Date)
     sportmonks_season_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
 
+    competition: Mapped["Competition"] = relationship(back_populates="seasons")
+
 
 class Team(Base):
+    """Catálogo de equipos. SIN competición: la división de un equipo
+    depende de la temporada y vive en player_team_season / team_fixtures
+    (ambas con competition_id) y, canónicamente, en seasons.competition_id."""
+
     __tablename__ = "teams"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     country: Mapped[Optional[str]] = mapped_column(String(80))
-    competition_id: Mapped[Optional[int]] = mapped_column(ForeignKey("competitions.id"))
     sportmonks_team_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
-
-    competition: Mapped[Optional["Competition"]] = relationship(back_populates="teams")
 
 
 class Position(Base):

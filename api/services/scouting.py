@@ -121,6 +121,7 @@ def tactical_fit_ranking(
         "team_id": team.id,
         "team_name": team.name,
         "season": season.name,
+        "competition": season.competition.name,
         "role_id": role.id,
         "role_code": role.code,
         "role_label": role.label,
