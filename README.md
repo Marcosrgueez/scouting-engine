@@ -62,9 +62,13 @@ con el desglose por eje, no como una caja negra.
 |---|---|
 | ![Estilo](docs/screenshots/03-estilo.png) | ![Encaje](docs/screenshots/04-encaje.png) |
 
+![Segunda División — el selector cambia de competición y el ranking no cruza con Primera](docs/screenshots/05-segunda.png)
+
 <sub>Diseño: "pizarra táctica de noche" — sin librería de gráficos, cada
 valor es una barra horizontal 0-100 que se puede *leer*, no un radar que
-hay que interpretar. Ver `frontend/README.md`.</sub>
+hay que interpretar. El selector de arriba a la derecha cambia de
+competición-temporada; cada una es un *pool* independiente. Ver
+`frontend/README.md`.</sub>
 
 ---
 
