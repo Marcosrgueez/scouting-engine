@@ -27,6 +27,7 @@ class Context(BaseModel):
     league_id: int
     league_name: str = "La Liga"
     tier: Optional[int] = None  # 1 = Primera, 2 = Segunda (Fase 12b). scripts/10 lo trae.
+    country: Optional[str] = None  # Fase 13: país de la competición. scripts/10 lo trae.
     season_id: int
     season_name: str = ""
     # Fase 12a: fechas de la temporada (las trae scripts/10). El context

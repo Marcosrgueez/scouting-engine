@@ -34,7 +34,10 @@ def get_db() -> Iterator[Session]:
 
 def _all_seasons(db: Session) -> list[Season]:
     """Todas las temporadas, orden de presentación: competición de menor tier
-    primero, y dentro de cada una la más reciente antes."""
+    primero; dentro del tier, la temporada más reciente antes; a igualdad de
+    fecha entre competiciones distintas (LaLiga / Premier / Serie A cierran
+    la misma semana), la competición más antigua del catálogo primero, para
+    que el default siga siendo LaLiga y no salte a la última liga cargada."""
     return list(
         db.scalars(
             select(Season)
@@ -42,6 +45,7 @@ def _all_seasons(db: Session) -> list[Season]:
             .order_by(
                 Competition.tier.asc().nullslast(),
                 Season.end_date.desc().nullslast(),
+                Competition.id.asc(),
                 Season.id.desc(),
             )
         )

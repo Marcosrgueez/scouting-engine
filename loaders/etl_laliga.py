@@ -88,7 +88,9 @@ _SM_DIR = os.path.join(_DATA_DIR, "raw_data", "sportmonks")
 _STATS_DIR = os.path.join(_SM_DIR, "player_stats")
 
 COMMIT_EVERY = 50
-COUNTRY_BY_ID = {32: "Spain"}
+# sportmonks country_id -> nombre. 32 España (LaLiga/Segunda), 462 Inglaterra,
+# 251 Italia, 11 Alemania (Fase 13). Si falta, el equipo queda con country NULL.
+COUNTRY_BY_ID = {32: "Spain", 462: "England", 251: "Italy", 11: "Germany"}
 
 
 def _load_json(path):
@@ -241,7 +243,7 @@ def run(dry_run=False, limit=None, only_players=None, fetch_missing=False, seaso
         tier = context.tier if context.tier is not None else (2 if context.league_id == 567 else 1)
         competition_id = _upsert_returning_id(
             session, Competition,
-            {"name": context.league_name, "country": "Spain", "tier": tier,
+            {"name": context.league_name, "country": context.country or "Spain", "tier": tier,
              "sportmonks_league_id": context.league_id},
             ["sportmonks_league_id"], ["name", "country", "tier"],
         )
