@@ -1,437 +1,397 @@
 # scouting-engine
 
-Motor de scouting de fútbol. Código de producción del proyecto (el
-experimento de validación de datos vive aparte, en `../data-experiment/`).
+**Motor de scouting de fútbol basado en datos.** Dado un rol táctico y un
+equipo, devuelve un ranking de jugadores que encajan — con el desglose
+métrica a métrica de *por qué* encajan. Construido sobre estadísticas de
+temporada de [Sportmonks](https://www.sportmonks.com/), PostgreSQL y una
+capa analítica propia; sin *machine learning* opaco: cada número se puede
+auditar hasta su origen.
 
-**Fase actual: 12b — multi-competición.** Conviven **LaLiga 2024/25 y
-2025/26** y **Segunda División 2025/26**, cada una como su propia fila de
-`seasons` (un `season_id` de Sportmonks es siempre de una liga → la
-competición vive en `seasons.competition_id`, NO en `teams`). Nada de
-`analysis/` cruza niveles de liga: percentiles, role scores, similarity y
-team style se calculan por `(competition_id, season_id)`. El selector del
-frontend agrupa por competición; por defecto, la temporada más reciente de
-la competición principal (menor tier). Ver
-`../data-experiment/docs/fase12_migration_investigation.md`.
-(Fases previas: 1 esquema, 2 ETL, 3 percentiles, 5 Player Role Score,
-6 Similarity Engine, 7 Team Style Profile, 8 Tactical Fit Score, 9 API,
-10 Frontend, 11 resúmenes narrativos, 12a multi-temporada.)
+Cobertura actual: **LaLiga 2024/25 y 2025/26 + Segunda División 2025/26**
+(dos competiciones, tres temporadas, ~1.750 jugadores / ~2.400 fichas
+jugador-temporada).
 
-## Requisitos
+> Proyecto personal. El código es mío; los datos son de Sportmonks y **no**
+> se incluyen en el repositorio (ver [Datos y licencia](#datos-y-licencia)).
 
-- Python 3.10+
-- PostgreSQL 14+ local. Instalado en esta máquina con
-  `winget install PostgreSQL.PostgreSQL.17` (servicio `postgresql-x64-17`,
-  puerto 5432, superusuario `postgres`).
+---
 
-## Puesta en marcha
+## El problema que resuelve
 
-```powershell
-cd scouting-engine
-python -m venv venv ; .\venv\Scripts\Activate.ps1
+Un ojeador no busca "el mejor jugador" — busca "un central que sepa salir
+con el balón para un equipo que tiene la pelota" o "un pivote destructor
+para un equipo que presiona arriba". El talento en abstracto no basta: el
+mismo jugador encaja distinto según el rol y el estilo del equipo.
+
+`scouting-engine` modela exactamente eso con el **Player–Team Tactical Fit
+Score**:
+
+```
+tactical_fit  =  0.70 · role_score  +  0.30 · style_compatibility
+```
+
+- **`role_score`** (0-100): cuánto se parece el perfil estadístico del
+  jugador al arquetipo del rol, por percentiles dentro de su posición.
+- **`style_compatibility`** (0-100): cuánto se parece el estilo de juego
+  del equipo de origen del jugador al del equipo destino, en 5 ejes
+  medidos a partir de datos reales de partido.
+
+### Ejemplo real (con números del sistema)
+
+**Eduardo Camavinga como *Ball Winner* (pivote destructor), LaLiga 2024/25:**
+
+| Equipo destino | role_score | estilo del equipo | **Tactical Fit** |
+|---|---|---|---|
+| Deportivo Alavés | 90.1 | mucha actividad defensiva (presión p97) | **92.3** |
+| FC Barcelona | 90.1 | domina el balón, apenas defiende (presión p2) | **63.8** |
+
+El `role_score` es el mismo — Camavinga es el mismo jugador. Lo que mueve
+30 puntos el encaje es el **estilo**: un destructor rinde donde hay balón
+que recuperar, no donde tu equipo ya tiene la pelota. El sistema lo dice
+con el desglose por eje, no como una caja negra.
+
+---
+
+## Capturas
+
+| Búsqueda de jugadores | Ficha con desglose de rol |
+|---|---|
+| ![Búsqueda](docs/screenshots/01-busqueda.png) | ![Ficha](docs/screenshots/02-ficha.png) |
+
+| Perfil de estilo de equipo | Ranking de encaje táctico |
+|---|---|
+| ![Estilo](docs/screenshots/03-estilo.png) | ![Encaje](docs/screenshots/04-encaje.png) |
+
+<sub>Diseño: "pizarra táctica de noche" — sin librería de gráficos, cada
+valor es una barra horizontal 0-100 que se puede *leer*, no un radar que
+hay que interpretar. Ver `frontend/README.md`.</sub>
+
+---
+
+## Arquitectura
+
+```mermaid
+flowchart TD
+    SM["Sportmonks API v3<br/><i>crawl puntual · ~800 peticiones/temporada</i>"]
+    RAW["JSON crudo<br/><i>versionado fuera del repo</i>"]
+    ETL["loaders/ · ETL idempotente<br/>validación Pydantic · imputación de ceros omitidos"]
+    PG[("PostgreSQL<br/>catálogos + entidades + tablas derivadas")]
+    AN["analysis/ · batch idempotente (DELETE scoped + INSERT)<br/>percentiles → role_scores → similarity<br/>team_fixtures → team_style_axes"]
+    API["api/ · FastAPI (sin auth, Swagger)<br/>routers → services → analysis/ o SELECT<br/><b>tactical_fit se calcula EN VIVO por request</b>"]
+    FE["frontend/ · React + Vite<br/>4 pantallas"]
+
+    SM --> RAW --> ETL --> PG --> AN --> PG
+    PG --> API --> FE
+```
+
+Cada capa hace una cosa y deja el resultado en la base de datos para la
+siguiente. La API **nunca reimplementa** lógica de `analysis/`: o llama al
+módulo, o consulta la tabla que ese módulo ya pobló.
+
+---
+
+## Decisiones de diseño que mejor muestran el criterio
+
+El registro completo —decisiones fechadas, investigaciones previas a cada
+fase y análisis de licencias— está en [`docs/`](docs/README.md)
+([`DECISIONS.md`](docs/DECISIONS.md),
+[`roles_fase4_mapping.md`](docs/roles_fase4_mapping.md), las tres
+investigaciones y [`TOS_ARCHIVE.md`](docs/TOS_ARCHIVE.md)). Cinco
+decisiones que resumen el enfoque:
+
+**1. Validar el dato real antes de diseñar nada.**
+Una fase 0 entera (`../data-experiment/`, no versionada) descargó datos
+reales de LaLiga y midió *qué devuelven de verdad* Sportmonks y
+API-Football antes de escribir una línea de esquema. Reveló, entre otras
+cosas, que `tiros_totales` diverge 30-50 % entre proveedores por
+definición y que `precision_pases` de API-Football viene roto (`null` en
+7/13 jugadores, y donde trae valor no es un porcentaje).
+
+**2. Sportmonks como fuente única de estadística de jugador.**
+Por calidad de dato (más rico, `%` de pase limpio, campos base coherentes)
+y por licencia: Sportmonks **autoriza explícitamente** almacenar los datos
+de la API en infraestructura propia; los términos de API-Football no lo
+prohíben pero tampoco lo autorizan por escrito, y para un producto que
+persiste datos esa ambigüedad es un riesgo. No se mezclan campos de dos
+proveedores dentro de la misma estadística.
+
+**3. Cuatro roles construibles, no siete.**
+Se evaluaron 7 arquetipos contra la completitud real del dato por
+posición. Cuatro se pueden construir con rigor (*Ball Winner*,
+*Deep-Lying Playmaker*, *Advanced Playmaker*, *Ball Playing CB*). *Box-to-Box*
+se queda fuera porque sin datos físicos (distancia, sprints) no se
+distingue de un mediocentro completo posicional; *Pressing Forward* fuera
+porque sin datos de evento por zona no hay forma de medir presión.
+**Construir esos roles sería inventar señal que el dato no tiene.**
+
+**4. Heurística explicable en vez de ML en el Tactical Fit.**
+La matriz rol→estilo son signos declarados (`+possession`, `−directness`
+para un Deep-Lying Playmaker…), no pesos aprendidos. Sin datos de evento
+no hay forma de *aprender* qué perfil rinde en qué estilo sin
+sobreajustar, y un modelo que no se puede explicar a un ojeador no sirve
+en este dominio. El coste: la matriz es una hipótesis documentada, no un
+resultado validado contra criterio experto.
+
+**5. Los ceros que Sportmonks omite se imputan explícitamente.**
+Sportmonks no devuelve una estadística cuando vale 0. Si no se imputa, el
+cálculo de percentiles sobrestima a los jugadores flojos (un delantero sin
+`tackles` parecería tener datos que faltan, no 0 entradas). Al cargar se
+marca `is_imputed_zero = true`; los 6 campos base (minutos, apariciones,
+pases, precisión, rating, duelos ganados) **nunca** se imputan: si faltan,
+el jugador no jugó.
+
+---
+
+## Limitaciones documentadas
+
+El proyecto trata sus límites como parte del rigor, no como algo a
+esconder:
+
+| Límite | Consecuencia | Por qué |
+|---|---|---|
+| **Sin xG / xA** | La calidad de finalización y de creación se aproxima con *grandes ocasiones creadas / falladas*, no se mide. | Sportmonks no lo da a nivel agregado de temporada. |
+| **Sin datos de evento / presión por zona** | *Pressing Forward* no es construible. `press_intensity` mide "actividad defensiva" (tackles + intercepciones), que correlaciona con **menos** posesión — no es presión real (PPDA). | Requiere datos de tracking o de evento. |
+| **Sin League Strength Coefficient** | LaLiga y Segunda **nunca aparecen mezcladas en un mismo ranking**, a propósito: un percentil de Segunda no es comparable a uno de LaLiga y no hay factor de ajuste. Cada competición-temporada es su propio *pool*. | Construir el coeficiente es trabajo futuro consciente. |
+| **Sin pie dominante ni valor de mercado** | Ningún filtro puede apoyarse en ellos. | `preferred_foot` viene NULL en todo el roster; el valor de mercado no está en ninguna fuente. |
+| **Volumen defensivo sesgado por posesión** | Los centrales de equipos dominadores (Rüdiger) salen bajos en métricas defensivas per-90 porque su equipo tiene el balón. | Un ajuste por posesión es mejora futura. |
+| **Sin entrenador por temporada** | La narrativa de equipo usa solo el nombre del club. | Las fechas de tenencia de Sportmonks son incoherentes en los límites (varios entrenadores con `end` *antes* de empezar la temporada) — [`docs/fase11_coach_investigation.md`](docs/fase11_coach_investigation.md). Descartado para temporadas pasadas; reconsiderable para la temporada en curso. |
+
+---
+
+## Stack y puesta en marcha
+
+**Backend:** Python 3.10+ · SQLAlchemy 2.0 · Pydantic 2 · PostgreSQL 14+ ·
+FastAPI + Uvicorn.
+**Frontend:** React 19 · Vite · react-router · Vitest (sin librería de
+gráficos, sin estado global).
+**Sin Alembic** todavía: el esquema se crea con `create_all()` + un
+catálogo estático sembrado; los cambios de esquema van en scripts de
+migración manual (`db/migrate_*.py`).
+
+```bash
+# 1. Base de datos + esquema
+createdb scouting
+cp .env.example .env            # editar DATABASE_URL con tus credenciales
 pip install -r requirements.txt
+python -m db.create_schema      # crea tablas + catálogos estáticos
 
-Copy-Item .env.example .env
-# Editar .env si la contraseña de postgres no es "postgres".
+# 2. Cargar datos  (necesita un token de Sportmonks; el descargador vive
+#    en ../data-experiment/, ver nota abajo)
+python -m loaders.etl_laliga              # roster + estadísticas de temporada
+python -m loaders.etl_team_fixtures --offline   # partidos (si hay JSON cacheado)
 
-# Crear la base de datos una vez:
-& "C:\Program Files\PostgreSQL\17\bin\createdb.exe" -U postgres scouting
+# 3. Capa analítica (idempotente, se puede relanzar)
+python -m analysis.percentiles           # per-90 + percentiles por posición
+python -m analysis.role_scores           # Player Role Score 0-100 + desglose
+python -m analysis.similarity            # top-20 similar por jugador (cosine)
+python -m analysis.team_style            # ejes de estilo de equipo
 
-# Crear el esquema + poblar catálogos estáticos (positions, stat_types):
-python -m db.create_schema
-# (para empezar de cero: python -m db.create_schema --drop)
-# BD ya existente de antes de la Fase 12b: migrar el esquema (sin Alembic).
-python -m db.migrate_fase12b            # seasons.competition_id; drop teams.competition_id
-python -m db.migrate_fase12b --dry-run  # enseña el plan y hace rollback
-
-# Smoke test (Fase 1): cargar solo los 13 jugadores de prueba:
-python -m loaders.smoke_test_load
-
-# ETL masivo (Fase 2): cargar el roster completo de LaLiga 24/25.
-python -m loaders.etl_laliga --dry-run --limit 14   # prueba rapida
-python -m loaders.etl_laliga                        # carga real (idempotente)
-# LaLiga 25/26 (Fase 12a): mismo pipeline, otra temporada. Convive con 24/25.
-#   1. descargar el crudo: cd ../data-experiment && python -m scripts.10_fetch_season --season-id 25659
-python -m loaders.etl_laliga --season-dir s25659    # DELETE scoped por season_id, no toca 24/25
-# Segunda División 25/26 (Fase 12b): mismo pipeline, otra competición.
-#   cd ../data-experiment && python -m scripts.10_fetch_season --season-id 25673 --league-id 567
-python -m loaders.etl_laliga --season-dir s25673    # competition/tier del context.json; salta equipos sin plantilla
-
-# ETL de partidos (Fase 7): team_fixtures + team_fixture_statistics.
-python -m loaders.etl_team_fixtures                                   # 24/25 (si es la unica temporada)
-python -m loaders.etl_team_fixtures --sportmonks-season-id 25659 --season-dir s25659   # LaLiga 25/26
-python -m loaders.etl_team_fixtures --sportmonks-season-id 25673 --season-dir s25673   # Segunda 25/26
-python -m loaders.etl_team_fixtures --sportmonks-season-id 23621 --offline             # 24/25 explicito
-
-# Analisis (Fases 3/5/6/8). Todos toman --season-id (id interno de la BD)
-# para recalcular una sola temporada; sin el, procesan todas las cargadas
-# (el PARTITION separa por season+competition, no se contaminan).
-python -m analysis.percentiles                      # umbral 900 min
-python -m analysis.percentiles --season-id 3        # solo 25/26 (DELETE scoped)
-python -m analysis.percentiles --min-minutes 750    # el umbral es un parametro
-
-# Player Role Score (Fase 5): score de encaje 0-100 por rol, con desglose.
-python -m analysis.role_scores --dry-run            # calcula y hace rollback
-python -m analysis.role_scores                      # usa percentiles de umbral 900
-python -m analysis.role_scores --min-minutes 750    # si recalculaste percentiles a 750
-
-# Player Similarity (Fase 6): top-20 similar por jugador (cosine, mismo bucket).
-python -m analysis.similarity --dry-run             # calcula y hace rollback
-python -m analysis.similarity                       # usa percentiles de umbral 900
-python -m analysis.similarity --explain "Pedri"     # top-20 ya calculado de un jugador
-
-# Ejes de estilo de equipo (Fase 8, parte precalculada): percentiles por eje.
-python -m analysis.team_style --dry-run
-python -m analysis.team_style                       # umbral 5 partidos/formacion (Fase 7)
-
-# Tactical Fit Score (Fase 8): se calcula BAJO DEMANDA, no hay tabla.
-python -m analysis.tactical_fit --player "Pedri" --role deep_lying_playmaker --explain
-python -m analysis.tactical_fit --team "FC Barcelona" --role ball_winner --top 10
-python -m analysis.tactical_fit --player "Isco" --team "Osasuna" --by-formation --explain
-python -m analysis.tactical_fit --player "Rodri" --w-role 0.6 --w-style 0.4   # peso ajustable
-
-# API (Fase 9 + 12a/12b): expone todo por HTTP. ?season= / ?competition= en cada endpoint
-# (id, sportmonks_season_id o nombre '2025/2026'); por defecto la mas reciente.
-python -m uvicorn api.main:app --reload        # -> http://127.0.0.1:8000/docs
-#   GET /seasons               -> temporadas cargadas (para el selector del frontend)
-#   GET /players?season=2024/2025   -> jugadores de esa temporada
-
-# Frontend (Fase 10): React + Vite. Necesita la API corriendo.
-cd frontend && npm install && npm run dev      # -> http://localhost:5173
+# 4. API + frontend
+python -m uvicorn api.main:app --reload   # http://127.0.0.1:8000/docs
+cd frontend && npm install && npm run dev # http://localhost:5173
 ```
 
-## Estructura
+> **Nota sobre los datos.** El JSON crudo de Sportmonks y los scripts de
+> descarga (`scripts/NN_*.py`) viven en un directorio hermano
+> `../data-experiment/` que **no forma parte de este repositorio** (contiene
+> datos bajo licencia de terceros). Sin él, este repo se lee como muestra
+> de **código y metodología**: el esquema, la capa analítica, la API y el
+> frontend son completos y ejecutables una vez hay una base de datos
+> poblada. Con un token de Sportmonks se puede reconstruir la descarga.
 
-```
-db/
-  database.py        engine + Session (lee DATABASE_URL del .env)
-  models.py          los 20 modelos SQLAlchemy
-  seed_catalogs.py   datos estáticos de positions y stat_types
-  create_schema.py   create_all() + seed (sin Alembic todavía)
-  migrate_fase12b.py migración manual: competición de teams -> seasons
-loaders/
-  schemas.py            modelos Pydantic del JSON de Sportmonks (validacion + mapper)
-  sportmonks_mapping.py  helpers JSON -> esquema interno (compartidos)
-  smoke_test_load.py     Fase 1: carga puntual de 13 jugadores
-  etl_laliga.py          Fase 2: ETL masivo del roster, idempotente
-  etl_team_fixtures.py   Fase 7: ETL de partidos (formaciones + stats de equipo), idempotente
-api/
-  main.py              Fase 9: FastAPI app, CORS, routers. Sin auth. Swagger en /docs
-  dependencies.py        sesion de DB por request
-  routers/               players, teams, roles, scouting
-  services/              llaman a analysis/ o consultan las tablas ya pobladas
-  schemas/               Pydantic de request/response (NO confundir con loaders/schemas.py)
-frontend/              Fase 10: React + Vite. 4 pantallas sobre la API. Ver frontend/README.md
-analysis/
-  percentiles.py         Fase 3: per-90 + percentiles por bucket, idempotente
-  role_scores.py         Fase 5: Player Role Score con pesos, idempotente
-  similarity.py          Fase 6: Player Similarity Engine (cosine, top-20), idempotente
-  team_style.py          Fase 8: ejes de estilo por equipo/formacion (percentiles), idempotente
-  tactical_fit.py        Fase 8: Tactical Fit Score, funcion parametrizada BAJO DEMANDA
-  narrative.py           Fase 11: resumenes por reglas (jugador y estilo de equipo), sin LLM
-```
+Cada módulo de `analysis/` y de `loaders/` acepta `--dry-run` y
+`--season-id` / `--season-dir` para trabajar sobre una sola
+competición-temporada sin tocar el resto.
 
-## Percentiles (`analysis/percentiles.py`)
+---
 
-Puebla `player_percentiles` de forma idempotente (DELETE scoped + INSERT).
+## Cómo funciona cada capa
 
-- **Umbral de minutos** = parametro de `recompute()` (`--min-minutes`, por
-  defecto **900** = 10 partidos). NO es constante ni columna de config. Un
-  jugador por debajo simplemente no tiene filas en `player_percentiles`.
-- **Normalizacion** (`stat_types.normalization`):
-  - `per90` — todos los contadores: `(suma / minutos) * 90`.
-  - `raw` — `accurate-passes-percentage` (ya es %) y `rating` (media 0-10);
-    entre etapas se hace media ponderada por minutos.
-  - `none` — `minutes-played` (es el propio umbral) y `appearances`
-    (disponibilidad, no rendimiento) NO entran.
-- **Percentil** = `PERCENT_RANK` dentro de
-  `(season, competition, position_bucket, stat_type)`, orientado con
-  `stat_types.direction` -> **100 = mejor de su bucket, siempre**
-  (para `lower_better` como tarjetas o perdidas se invierte).
-- Los ceros imputados (`is_imputed_zero`) cuentan como el 0 que son.
-- `goals-conceded` / `cleansheets` / `saves` son `goalkeeper_only`: solo se
-  calculan dentro del bucket `portero`.
+<details>
+<summary><b>ETL — <code>loaders/</code></b></summary>
 
-**Caveats conocidos** (no son bugs, son limites del dato de temporada):
-- Las stats de volumen defensivo por-90 (tackles, intercepciones...)
-  infravaloran a los centrales de equipos dominadores (p.ej. Rüdiger sale
-  bajo porque el Madrid tiene el balon y el rival casi no llega). Un
-  ajuste por posesion es mejora futura.
-- `saves` per-90 de un portero depende de los tiros recibidos, no solo de
-  su nivel; sin "tiros a puerta recibidos" no se puede sacar % de paradas.
-  `goals-conceded` y `cleansheets` sí son informativos.
-
-## ETL (`loaders/etl_laliga.py`)
-
-Reutiliza el JSON ya descargado en `../data-experiment/raw_data/sportmonks/`
-(no vuelve a pedir a la API salvo `--fetch-missing` para huecos puntuales).
+Reutiliza el JSON ya descargado (no vuelve a pedir a la API salvo
+`--fetch-missing`). Pipeline por jugador:
 
 ```
 player_stats/{id}.json
-  -> validacion Pydantic (loaders/schemas.py)   [si falla: log + skip]
-  -> upsert players            (ON CONFLICT sportmonks_player_id)
-  -> upsert player_team_season (ON CONFLICT player_id+season_id+order_in_season)
-  -> upsert player_statistics  (ON CONFLICT player_team_season_id+stat_type_id)
+  → validación Pydantic         [si falla: log + skip, no tumba el ETL]
+  → upsert players              (ON CONFLICT sportmonks_player_id)
+  → upsert player_team_season   (ON CONFLICT player_id + season_id + order_in_season)
+  → upsert player_statistics    (imputa is_imputed_zero donde Sportmonks omitió el 0)
 ```
 
-**Idempotente:** relanzarlo no duplica nada. Cada jugador se procesa
-"borrar sus etapas (cascade a sus stats) + reinsertar", con commits por
-lotes de 50, así que si se corta a la fila 400 se puede relanzar sin
-limpiar la BD.
+**Idempotente:** cada jugador se procesa "borrar sus etapas (cascade a sus
+stats) + reinsertar", con commits por lotes. Si se corta a la mitad, se
+relanza sin limpiar nada. Un jugador puede tener **varias etapas** en una
+temporada (cesión / traspaso); las stats vienen separadas por equipo y se
+agregan con `SUM ... GROUP BY`.
 
-## Player Role Score (`analysis/role_scores.py`)
+</details>
 
-Puebla `player_role_scores` + `player_role_score_breakdown` de forma
-idempotente (DELETE scoped + INSERT), a partir de `player_percentiles`
-(Fase 3) y del catálogo `roles` / `role_buckets` / `role_weights`.
+<details>
+<summary><b>Percentiles — <code>analysis/percentiles.py</code></b></summary>
 
-- **4 roles "construibles plenos"** (`../data-experiment/docs/roles_fase4_mapping.md`):
-  `ball_winner`, `deep_lying_playmaker`, `advanced_playmaker`,
-  `ball_playing_cb`. Un jugador solo recibe score en un rol si el `bucket`
-  de su `primary_position` está en `role_buckets`.
-- **Pesos por nivel** (`role_weights.tier`, informativo): núcleo 3,
-  apoyo 1.5, contexto 0.5. El cálculo usa solo `role_weights.weight`.
-- **Fórmula:** `score = SUM(percentil × peso) / SUM(peso)`, ya en `[0,100]`.
-- **Métricas faltantes → se excluyen del numerador y del denominador**
-  (el peso se renormaliza sobre lo disponible), NO se imputan a percentil
-  50. Motivo: los percentiles de Fase 3 ya imputan los ceros omitidos de
-  Sportmonks antes de rankear, así que un percentil bajo ya significa
-  "hace poco de esto"; un percentil ausente significa falta de dato (otra
-  liga/temporada), e imputar 50 inventaría una media que no tenemos.
-  `player_role_scores.total_weight` (< peso del rol ⇒ había huecos) y
-  `metrics_used` son provenance. Guarda: si el peso disponible cae por
-  debajo del **60 %** del peso del rol, no se emite fila.
-  En LaLiga 2024/25 la cobertura es del 100 % → 0 jugadores afectados.
-- **Explicabilidad:** `player_role_score_breakdown` guarda una fila por
-  métrica con `percentile`, `weight` y `contribution` (= percentil × peso).
-  `SUM(contribution) / SUM(weight)` sobre esas filas reproduce el `score`.
+`PERCENT_RANK` dentro de `(season, competition, position_bucket, stat_type)`,
+sobre los jugadores con **≥ 900 minutos** (umbral = parámetro, no
+constante). Orientado con `stat_types.direction` → **percentil 100 = mejor
+de su posición, siempre** (para `lower_better` como pérdidas o tarjetas se
+invierte). Los contadores se normalizan a per-90; los `%` y el rating se
+promedian ponderando por minutos.
 
-## Player Similarity Engine (`analysis/similarity.py`)
+</details>
 
-Puebla `player_similarity` de forma idempotente (**DELETE scoped +
-INSERT**). Para cada jugador, guarda solo su **top-20 más similar** dentro
-de su mismo `bucket` y temporada — NO la matriz N² completa.
-
-- **Vector de features:** los percentiles per90 de `player_percentiles`
-  (Fase 3), **todas las métricas del bucket** (34 de campo; 37 portero,
-  con las 3 solo-portero). La cobertura de Fase 3 es del 100 % dentro de
-  cada bucket → todos los vectores están alineados y completos.
-- **Distancia:** cosine similarity sobre el percentil crudo `[0,100]`
-  (todo positivo → similitud en `[0,1]`). Los scores se agrupan alto
-  (top-1 típico 0.88-0.94); **lo que discrimina es el ranking**, no el
-  valor absoluto. Verificado a ojo: lateral ofensivo y lateral defensivo
-  puro NO salen en el top-20 el uno del otro.
-- **Solo mismo bucket.** Sin comparación cross-posición en esta fase.
-- **Idempotencia = DELETE scoped + INSERT** (no upsert): el top-20 de un
-  jugador puede cambiar de miembros entre pasadas y un upsert dejaría
-  filas viejas colgando.
-- La tabla **no es simétrica** (que B esté en el top-20 de A no implica lo
-  contrario, ni con el mismo score/rank).
-
-**Filtros de edad y lado = parámetros de consulta, NO del cálculo.** Se
-aplican con un `WHERE` al leer `player_similarity` (join a `players`
-`birth_date` / `positions.lado`); la similitud estadística entre dos
-jugadores no cambia según el filtro que se use después. Ejemplo — similares
-a X sub-23 y por la izquierda:
-
-```sql
-SELECT sp.name, ps.similarity_score, ps.rank
-FROM player_similarity ps
-JOIN players p  ON p.id = ps.player_id
-JOIN players sp ON sp.id = ps.similar_player_id
-JOIN positions pos ON pos.id = sp.primary_position_id
-WHERE p.name = 'Lamine Yamal'
-  AND date_part('year', age(DATE '2025-05-25', sp.birth_date)) < 23
-  AND pos.lado = 'izquierda'
-ORDER BY ps.rank;
-```
-
-**Fuera de alcance (pendientes conocidos):** pie dominante
-(`players.preferred_foot` sigue NULL en todo el roster) y valor de mercado
-(sin fuente en ningún proveedor). Ningún filtro puede apoyarse en ellos
-todavía.
-
-## Team Style Profile (`loaders/etl_team_fixtures.py`)
-
-Perfil de equipo construido desde **datos reales de partido**, no a mano.
-Grano **crudo por partido**: 1 fila por (equipo, partido) en
-`team_fixtures` + sus stats en `team_fixture_statistics`. **La agregación
-por formación (V/E/D, medias, por venue) se hace por consulta (`GROUP BY`),
-no en la carga** — mismo principio que `player_team_season` /
-`player_statistics`.
-
-- **Descarga:** bulk paginado de Sportmonks
-  (`/fixtures?filters=fixtureSeasons:{id}&include=participants;formations;statistics.type;scores;state&per_page=50`),
-  **8 peticiones** para los 380 partidos. JSON crudo en
-  `../data-experiment/raw_data/sportmonks/fixtures/page_NN.json`. `lineups`
-  NO se descarga (el perfil no lo usa; inflaba el JSON ~20×).
-- **Catálogo `team_stat_types`** (15 codes: posesión, pases + precisión +
-  largos, tiros total/puerta/dentro/fuera, córners, faltas, tackles,
-  intercepciones, centros totales + precisos, regates). **Separado de
-  `stat_types`** (stats de jugador) a propósito: varios `code` coinciden
-  pero la entidad y la unidad son distintas (total de un equipo en un
-  partido vs per-90 de temporada de un jugador), y `normalization` /
-  `direction` / `valid_for` de `stat_types` no aplican a una stat de
-  equipo.
-- **`goals` NUNCA sale de statistics** (Sportmonks lo omite en 0):
-  `goals_for` / `goals_against` vienen siempre de `scores[]`
-  (`description == "CURRENT"`); `result` se deriva.
-- **Ceros omitidos:** `is_imputed_zero` como en `player_statistics` —
-  se imputa 0 en stats `count` ausentes, las `percentage` (posesión,
-  precisión) no se imputan. En LaLiga 24/25: solo 4 filas imputadas de
-  22 800.
-- **`is_conceded`:** `false` = stat propia; `true` = la misma stat del
-  rival en ese partido (perfil defensivo, gratis del mismo fixture). No
-  duplica filas de `team_fixtures`.
-- **Idempotente:** DELETE scoped por `season_id` (+ cascade) + INSERT. No
-  upsert (el set de stats presentes de un partido puede cambiar entre
-  descargas).
-
-Umbral sugerido al agregar: **≥5 partidos por formación** (`HAVING
-count(*) >= 5`) — por debajo, la V/E/D y las medias son ruido de
-calendario. Filtro de consulta, no almacenado.
-
-## Tactical Fit Score (`analysis/tactical_fit.py`)
-
-Compatibilidad jugador-equipo:
+<details>
+<summary><b>Player Role Score — <code>analysis/role_scores.py</code></b></summary>
 
 ```
-tactical_fit = w_role · role_score  +  w_style · style_compatibility
+score = SUM(percentil × peso) / SUM(peso)          → ya en [0, 100]
 ```
 
-Ambos componentes en `[0,100]`, `w_role + w_style = 1` → score en `[0,100]`.
-Pesos **70/30 por defecto, como parámetro** (`--w-role` / `--w-style`), no
-hardcodeado. Heurística explícita — sin datos de evento no hay forma de
-*aprender* qué perfil rinde en qué estilo.
+Pesos por nivel (núcleo 3 / apoyo 1.5 / contexto 0.5). **Métricas que
+faltan se excluyen del numerador y del denominador** (el peso se
+renormaliza), no se imputan a percentil 50 — un percentil ausente es falta
+de dato, no rendimiento medio. Guarda: si el peso disponible cae por debajo
+del 60 % del peso del rol, no se emite fila. `player_role_score_breakdown`
+guarda una fila por métrica (`percentile`, `weight`, `contribution`); su
+suma reproduce el score — esa es la explicabilidad.
 
-- **No se materializa.** El producto cartesiano jugador×equipo×rol×formación
-  (~34 k filas de `0.7·a + 0.3·b`) quedaría obsoleto al tocar el peso. Se
-  calcula **bajo demanda** con una función parametrizada (decisión
-  consultada, patrón "función parametrizada" como los percentiles de
-  Fase 3). Lo que sí se precalcula (parte cara y reutilizable): los
-  percentiles de estilo en **`team_style_axes`** (325 filas).
-- **5 ejes de estilo** (percentil del equipo entre los 20 de LaLiga, para
-  el equipo+formación o el agregado si la formación no llega a 5 partidos):
-  `possession`, `pass_accuracy`, `crossing_frequency` (centros/partido),
-  `press_intensity` (tackles+intercepciones/partido), `directness`
-  (long-passes/passes).
-- **Matriz rol→estilo** (`role_style_weights`, catálogo, **pesos planos
-  1.0** — la matriz de diseño solo da signos y hay 1-3 ejes por rol, los
-  tiers de Fase 5 añadirían precisión falsa):
+</details>
 
-  | rol | ejes |
-  |---|---|
-  | Deep-Lying Playmaker | +possession, +pass_accuracy, **−directness** |
-  | Ball Playing CB | +possession, +pass_accuracy |
-  | Advanced Playmaker | +crossing_frequency |
-  | Ball Winner | +press_intensity |
+<details>
+<summary><b>Player Similarity — <code>analysis/similarity.py</code></b></summary>
 
-  `direction = negative` → en el cálculo se usa `100 − percentil` (directitud
-  alta perjudica a un Deep-Lying Playmaker).
-- **`style_compatibility` = `SUM(pctl_efectivo · peso) / SUM(peso)`** — misma
-  forma de combinar que el Role Score de la Fase 5. El desglose por eje
-  (`--explain`) dice qué eje sumó y qué eje restó.
-- **Caveats:** `press_intensity` (tackles+intercepciones) no es presión
-  real (necesita datos de evento / PPDA); mide "actividad defensiva", que
-  correlaciona con MENOS posesión — hereda el caveat de posesión de
-  Fase 3. Advanced Playmaker y Ball Winner tienen un solo eje de estilo,
-  así que su `style_compatibility` es ese único percentil.
+Cosine similarity sobre el vector de percentiles per-90 (todas las métricas
+del *bucket*), solo dentro de la misma posición y temporada. Se guarda solo
+el **top-20** por jugador, no la matriz N². Los filtros de edad y lado son
+parámetros de *consulta* (se aplican con un `WHERE` al leer), no del
+cálculo: la similitud estadística entre dos jugadores no cambia según el
+filtro posterior.
 
-## API (`api/`)
+</details>
 
-FastAPI que expone las Fases 1-8. **Sin autenticación.** Swagger en
-`/docs`, ReDoc en `/redoc`, esquema en `/openapi.json`. CORS abierto (`*`)
-porque el frontend (Fase 10) es un cliente aparte sin cookies.
+<details>
+<summary><b>Team Style Profile — <code>loaders/etl_team_fixtures.py</code> + <code>analysis/team_style.py</code></b></summary>
 
-```powershell
-pip install -r requirements.txt          # añade fastapi + uvicorn
-python -m uvicorn api.main:app --reload   # http://127.0.0.1:8000/docs
-```
+Perfil de equipo desde **datos reales de partido**, no a mano. Grano crudo:
+1 fila por (equipo, partido); la agregación por formación se hace por
+consulta. `goals` **nunca** sale del bloque de estadísticas (Sportmonks lo
+omite en 0) — siempre de `scores[]`. 5 ejes de estilo (`possession`,
+`pass_accuracy`, `crossing_frequency`, `press_intensity`, `directness`),
+cada uno como percentil del equipo entre los de su competición-temporada.
+Umbral: ≥ 5 partidos por formación para emitir perfil de formación.
 
-**La API no reimplementa nada de `analysis/`.** `routers/` → `services/` →
-(módulos de `analysis/` o consultas a las tablas que esos módulos ya
-poblaron). El Tactical Fit se calcula **en vivo por request** (función de
-Fase 8), no se cachea.
+</details>
 
-**Fase 12a/12b — `?season=` / `?competition=`:** casi todos los endpoints
-aceptan `season` (id interno, `sportmonks_season_id` o nombre `'2025/2026'`);
-sin él, la temporada más reciente de la competición principal (menor tier).
-Como el nombre `'2025/2026'` existe en LaLiga y en Segunda, por nombre solo
-resuelve si es único; si no, la respuesta es **409** pidiendo `?competition=`
-(id, `sportmonks_league_id` o nombre) — o usa el `sportmonks_season_id`, que
-siempre es inequívoco. Cada consulta filtra por `season_id`, así que ninguna
-competición-temporada se mezcla con otra. La edad se calcula a fin de la
-temporada consultada (no "hoy"). `/roles` es catálogo, no lleva `season`.
+<details>
+<summary><b>Tactical Fit — <code>analysis/tactical_fit.py</code></b></summary>
+
+**No se materializa.** El producto jugador×equipo×rol×formación (~34 k
+filas de aritmética trivial) quedaría obsoleto al tocar el peso 70/30. Se
+calcula **bajo demanda** con una función parametrizada. Lo que sí se
+precalcula (parte cara y reutilizable): los percentiles de estilo en
+`team_style_axes`. `style_compatibility = SUM(pctl_efectivo · peso) /
+SUM(peso)`, donde `pctl_efectivo = 100 − percentil` para los ejes marcados
+`negative` (la directitud alta perjudica a un Deep-Lying Playmaker).
+
+</details>
+
+<details>
+<summary><b>API — <code>api/</code></b></summary>
+
+FastAPI, sin auth, Swagger en `/docs`. `routers/` (validan y delegan) →
+`services/` (queries + llamada a `analysis/`) → `schemas/` (Pydantic
+req/resp). Multi-competición: `?season=` (id interno, `sportmonks_season_id`
+o nombre) y `?competition=` para desambiguar cuando el nombre de temporada
+se repite entre ligas.
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/seasons` | Temporadas cargadas + cuál es la default (para el selector del frontend). |
-| GET | `/players` | Lista paginada (`offset`/`limit`/`total_count`). Filtros: `bucket`, `team_id`, `min_minutes` (900), `age_min`, `age_max`, `side`, `season`. |
-| GET | `/players/{id}` | Bio + `photo_url` + equipo + bucket/lado + percentiles + **`summary`** (frase por reglas: mejor rol + sus métricas core, Fase 11). 404 si no existe; `percentiles: []` si < umbral. |
-| GET | `/players/{id}/similar` | Top-20 de `player_similarity` ya calculado. Filtros `age_max`/`side` **sobre el resultado** (rank conserva su número). |
-| GET | `/players/{id}/roles` | Role scores del jugador + desglose completo de `player_role_score_breakdown`. |
-| GET | `/players/{id}/best-teams` | **Tactical Fit invertido (Fase 11):** ranking de los 20 equipos por encaje del jugador. `?role_id` opcional (si no, el de mayor score). Cada equipo con su `team_narrative`. |
-| GET | `/teams` | Los 20 equipos. |
-| GET | `/teams/{id}/style` | Estilo por formación desde `team_style_axes` + **`narrative`** (descripción por reglas, Fase 11). Formaciones con < 5 partidos en `formations_below_threshold` (nombre + nº, sin ejes) — ver decisión abajo. |
-| GET | `/roles` | Los 4 roles con `metric_weights` (Fase 5) y `style_weights` (Fase 8). |
-| POST | `/scouting/tactical-fit` | Body `{team_id, role_id, formation?}`. Ranking de jugadores por `score` desc con desglose + **`team_narrative`**. Formación sin muestra → 422 con la lista de formaciones disponibles. |
+| `GET` | `/seasons` | Competición-temporadas cargadas (para el selector). |
+| `GET` | `/players` | Lista paginada con filtros (bucket, equipo, edad, lado, minutos). |
+| `GET` | `/players/{id}` | Bio + foto + percentiles + `summary` narrativo (por reglas). |
+| `GET` | `/players/{id}/similar` | Top-20 similar, con filtros de edad/lado sobre el resultado. |
+| `GET` | `/players/{id}/roles` | Role scores + desglose completo por métrica. |
+| `GET` | `/players/{id}/best-teams` | Tactical Fit invertido: mejores equipos para el jugador. |
+| `GET` | `/teams` · `/teams/{id}/style` | Equipos y perfil de estilo por formación + narrativa. |
+| `GET` | `/roles` | Los 4 roles con su matriz de pesos y de estilo. |
+| `POST` | `/scouting/tactical-fit` | Ranking de jugadores por encaje en un equipo + rol. |
 
-**Fase 11 — resúmenes narrativos por reglas** (`analysis/narrative.py`,
-sin LLM: plantillas fijas, deterministas, auditables). `player_role_summary`
-(mejor rol + 2-3 métricas core de mayor contribución; si no hay rol, lo
-dice explícitamente) y `team_style_narrative` (los 1-2 ejes de estilo más
-alejados del percentil 50, con umbrales ≥70 / ≤30). **Sin entrenador:** la
-investigación de la Fase 11
-(`../data-experiment/docs/fase11_coach_investigation.md`) concluyó que las
-fechas de tenencia de Sportmonks no son fiables para fijar el entrenador de
-una temporada pasada; la narrativa usa solo el nombre del equipo.
+Un jugador por debajo del umbral de minutos devuelve **200 con listas
+vacías** (existe, pero sin percentiles fiables), nunca 404. Los errores
+422 explican la alternativa (formación sin muestra → lista las que sí
+tienen perfil).
 
-**Errores:** 404 (id inexistente), 422 (Pydantic para body/query inválido;
-también para `formation`/`team_id` sin datos suficientes, con mensaje que
-explica qué falta y qué alternativas hay).
+</details>
 
-**Decisión — formaciones bajo el umbral de 5 en `/teams/{id}/style`:** se
-**incluyen, marcadas como muestra insuficiente**, en un array aparte
-`formations_below_threshold` con solo `formation` + `n_matches` y **sin
-ejes de estilo**. Motivo: `team_style_axes` nunca las materializó (Fase 7
-filtra en la carga con `HAVING count(*) >= 5`), así que no hay percentiles
-que devolver; pero omitirlas del todo le ocultaría al frontend que el
-equipo también usó esas formaciones. El dato crudo sale de `team_fixtures`
-por `GROUP BY`, que es el patrón de acceso que la Fase 7 diseñó.
+<details>
+<summary><b>Resúmenes narrativos — <code>analysis/narrative.py</code></b></summary>
 
-## Esquema
+Frases por **plantilla fija, deterministas y auditables — sin LLM**.
+`player_role_summary` ("*se perfila como Ball Winner (score 90.1): destaca
+en entradas (percentil 100)…*") y `team_style_narrative` (los 1-2 ejes más
+alejados del percentil 50, umbrales ≥70 / ≤30; admite explícitamente el
+caso "sin rasgo marcado").
 
-Catálogos: `competitions`, `seasons` (cada una de UNA competición vía
+</details>
+
+---
+
+## Esquema de datos
+
+**Catálogos:** `competitions`, `seasons` (cada una de *una* competición vía
 `competition_id`), `teams` (sin competición: la división depende de la
-temporada), `positions`, `stat_types`, `roles`, `role_buckets`,
+temporada), `positions`, `stat_types`, `roles` + `role_buckets` +
 `role_weights`, `team_stat_types`, `role_style_weights`.
-Entidades: `players`, `player_team_season`, `player_statistics`,
-`team_fixtures`, `team_fixture_statistics`.
-Derivado (Fase 3): `player_percentiles`.
-Derivado (Fase 5): `player_role_scores`, `player_role_score_breakdown`.
-Derivado (Fase 6): `player_similarity`.
-Derivado (Fase 8): `team_style_axes` (el Tactical Fit en sí no se
-almacena — función bajo demanda).
+**Entidades:** `players`, `player_team_season` (multi-etapa),
+`player_statistics`, `team_fixtures`, `team_fixture_statistics`.
+**Derivadas** (idempotentes, DELETE scoped + INSERT): `player_percentiles`,
+`player_role_scores` + `player_role_score_breakdown`, `player_similarity`,
+`team_style_axes`.
 
-Puntos de diseño que vienen del experimento de Fase 0
-(`../data-experiment/docs/DECISIONS.md`):
+---
 
-- **Fuente única de estadísticas: Sportmonks.** `stat_types.source_provider`
-  por defecto `sportmonks`. `players.apifootball_player_id` se guarda solo
-  como referencia cruzada.
-- **Multi-etapa:** `player_team_season` permite varias filas por
-  (jugador, temporada) — cesiones / traspasos dentro de la liga.
-  Se numeran con `order_in_season` (0, 1, ...) y el unique constraint va
-  sobre `(player_id, season_id, order_in_season)`. Se descartó usar
-  `date_from` (Sportmonks no da fechas de etapa fiables; `NULL != NULL` en
-  el índice no desduplicaría). Las stats cuelgan de cada etapa; la
-  agregación se hace con `SUM ... GROUP BY`.
-- **Ceros omitidos:** Sportmonks no devuelve una estadística cuando vale 0.
-  Al cargar se imputa `value = 0, is_imputed_zero = true` para que el
-  cálculo de percentiles (Fase 3) no sobrestime a los jugadores flojos.
-  Los campos base (minutos, apariciones, pases, precisión, rating,
-  duelos ganados) NO se imputan: si faltan, el jugador no jugó.
-- **Stats solo-portero:** `stat_types.valid_for = 'goalkeeper_only'` para
-  `saves`, `goals-conceded` y `cleansheets`. El loader solo crea esas filas
-  para jugadores con `bucket = 'portero'`. (`goals-conceded` / `cleansheets`
-  en Sportmonks vienen también para jugadores de campo pero son stats de
-  equipo; `saves` siempre es 0 para jugadores de campo.)
+## Estado y roadmap
+
+**Construido (Fases 0-12):** validación de dato → esquema → ETL →
+percentiles → taxonomía de roles → Player Role Score → Similarity → Team
+Style Profile → Tactical Fit → API → frontend → resúmenes narrativos →
+multi-temporada → multi-competición.
+
+**Extensión futura consciente** (no olvidos — decisiones de "todavía no"):
+
+- **League Strength Coefficient** — para poder comparar Segunda con
+  Primera en un mismo ranking.
+- **Entrenador de la temporada en curso** — donde el flag `active` de
+  Sportmonks sí es fiable.
+- **Más ligas y temporadas** — el pipeline ya es multi-competición.
+- **Potencial / desarrollo de jóvenes** — mencionado en el roadmap
+  original, sin construir.
+- **Ajuste por posesión** de las métricas de volumen defensivo.
+- **Alembic** para las migraciones de esquema.
+
+---
+
+## Estructura del repositorio
+
+```
+db/          esquema SQLAlchemy, creación y migraciones
+loaders/     ETL: Sportmonks JSON → PostgreSQL (idempotente)
+analysis/    capa analítica batch + Tactical Fit bajo demanda
+api/         FastAPI sobre las tablas ya pobladas
+frontend/    React + Vite, 4 pantallas
+docs/        decisiones, investigaciones previas y notas de sesión (ver docs/README.md)
+```
+
+---
+
+## Datos y licencia
+
+- **Código:** [MIT](LICENSE).
+- **Datos:** provienen de la API de Sportmonks bajo su licencia, que
+  autoriza almacenar y construir productos derivados pero **no** revender
+  los datos ni reproducir el servicio. Este repositorio **no contiene
+  ningún dato de Sportmonks** — el JSON crudo y la base de datos están en
+  `.gitignore`. Análisis de términos en
+  [`docs/TOS_ARCHIVE.md`](docs/TOS_ARCHIVE.md) y
+  [`docs/DECISIONS.md`](docs/DECISIONS.md).
