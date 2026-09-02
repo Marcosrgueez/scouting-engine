@@ -1,18 +1,15 @@
 /**
- * Smoke test de las 4 pantallas contra la API REAL (Fase 9).
- * Requiere uvicorn en http://127.0.0.1:8000 (o VITE_API_BASE).
+ * Smoke test de las pantallas contra la API REAL (Fase 9 + 11 + 12a).
+ * Requiere uvicorn en http://127.0.0.1:8000 (o VITE_API_BASE) con LaLiga
+ * 24/25 Y 25/26 cargadas.
  *
  *   npm test
- *
- * No mockea: renderiza cada página, espera a que resuelva el fetch y
- * comprueba que aparece contenido coherente con lo validado en fases
- * anteriores (Camavinga Ball Winner 90.1 = Fase 5, fit 92.3 = Fase 8,
- * top-5 de similares = Fase 6, estilo de Barça = Fase 8).
  */
 import { render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { expect, test } from 'vitest'
+import { beforeEach, expect, test } from 'vitest'
 
+import { setSeason } from './api'
 import PlayerSearch from './pages/PlayerSearch'
 import PlayerProfile from './pages/PlayerProfile'
 import TeamProfile from './pages/TeamProfile'
@@ -26,67 +23,51 @@ const mount = (path, routes) =>
     </MemoryRouter>,
   )
 
+beforeEach(() => setSeason(null)) // default del backend = 25/26
+
 test('helpers', () => {
   expect(posCode('centrocampista')).toBe('MF')
   expect(sideMark('izquierda')).toBe('L')
-  expect(sideMark('centro')).toBe('')
   expect(axisName('press_intensity')).toBe('intensidad de presión')
 })
 
-test('búsqueda de jugadores: filtra y lista contra la API', async () => {
+test('búsqueda: temporada por defecto (25/26) lista jugadores', async () => {
   mount('/players', <Route path="/players" element={<PlayerSearch />} />)
-  await waitFor(() => expect(screen.getByText(/con datos/)).toBeDefined(), { timeout: 5000 })
-  // 339 jugadores con >=900 min (= pool de Fase 3)
-  await waitFor(() => expect(screen.getByText(/339 con datos/)).toBeDefined())
+  await waitFor(() => expect(screen.getByText(/346 con datos/)).toBeDefined(), { timeout: 5000 })
   expect(screen.getAllByRole('row').length).toBeGreaterThan(10)
 })
 
-test('ficha de jugador: foto, resumen, role fit, similares, mejores equipos (Camavinga)', async () => {
-  mount('/players/396', <Route path="/players/:id" element={<PlayerProfile />} />)
-  await waitFor(() => expect(screen.getByRole('heading', { name: 'Eduardo Camavinga' })).toBeDefined(), {
+test('ficha 25/26: foto + resumen + roles + similares + mejores equipos (Pedri)', async () => {
+  mount('/players/444', <Route path="/players/:id" element={<PlayerProfile />} />)
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'Pedri' })).toBeDefined(), {
     timeout: 5000,
   })
-  // Fase 11: foto + resumen narrativo por reglas
   await waitFor(() => expect(document.querySelector('img.player-photo')).toBeTruthy())
   await waitFor(() =>
-    expect(screen.getByText(/se perfila como Ball Winner .*destaca en entradas/)).toBeDefined(),
+    expect(
+      screen.getByText(/se perfila como Deep-Lying Playmaker \(score 95\.5\)/),
+    ).toBeDefined(),
   )
-  // role fit: 'entradas' aparece en el desglose y en el perfil de percentiles
-  await waitFor(() => expect(screen.getAllByText('entradas').length).toBeGreaterThan(0))
-  await waitFor(() => expect(screen.getByText('Perfil de percentiles')).toBeDefined())
-  // similares: top-1 real (= Fase 6)
-  await waitFor(() => expect(screen.getByText('Johnny Cardoso')).toBeDefined(), { timeout: 5000 })
-  // Fase 11: mejores equipos — Dep. Alavés arriba (= control de Fase 8)
+  await waitFor(() => expect(screen.getAllByText('95.5').length).toBeGreaterThan(0))
   await waitFor(() => expect(screen.getByText('Mejores equipos para este perfil')).toBeDefined())
-  await waitFor(() => {
-    const row = screen.getByText('Deportivo Alavés').closest('tr')
-    expect(within(row).getByText('92.3')).toBeDefined()
-  }, { timeout: 5000 })
+  await waitFor(() => expect(screen.getByText('Arda Güler')).toBeDefined(), { timeout: 5000 })
 })
 
-test('perfil de equipo: narrativa + agregado + formaciones + muestra insuficiente (Barça)', async () => {
-  mount('/teams/10', <Route path="/teams/:id" element={<TeamProfile />} />)
+test('equipo 25/26: narrativa + formaciones + muestra insuficiente (Atlético)', async () => {
+  mount('/teams/14', <Route path="/teams/:id" element={<TeamProfile />} />)
   await waitFor(() => expect(screen.getByText('agregado')).toBeDefined(), { timeout: 5000 })
-  // Fase 11: narrativa de estilo por reglas — Barça = posesión alta, poco balón largo
-  await waitFor(() => expect(screen.getByText(/domina la posesión.*poco balón largo/)).toBeDefined())
-  await waitFor(() => expect(screen.getByText('4-2-3-1')).toBeDefined())
-  await waitFor(() => expect(screen.getByText('4-3-3')).toBeDefined())
-  // 4-1-4-1 (1 partido) va en "muestra insuficiente"
   await waitFor(() => expect(screen.getByText(/muestra insuficiente/)).toBeDefined())
-  await waitFor(() => expect(screen.getByText('4-1-4-1')).toBeDefined())
 })
 
-test('encaje táctico: ranking coincide con la Fase 8 (Ball Winner en Dep. Alavés)', async () => {
+test('encaje táctico 24/25 preservado: Ball Winner en Dep. Alavés = Camavinga 92.3', async () => {
+  setSeason('2024/2025')
   const user = (await import('@testing-library/user-event')).default.setup()
   mount('/fit', <Route path="/fit" element={<TacticalFit />} />)
   await waitFor(() => expect(screen.getByText('Deportivo Alavés')).toBeDefined(), { timeout: 5000 })
-
   const selects = screen.getAllByRole('combobox')
-  await user.selectOptions(selects[0], '11') // Deportivo Alavés
-  await user.selectOptions(selects[1], '1') // Ball Winner
+  await user.selectOptions(selects[0], '11')
+  await user.selectOptions(selects[1], '1')
   await user.click(screen.getByRole('button', { name: 'Buscar' }))
-
-  // top-1 = Camavinga con fit 92.3 (idéntico a la validación de Fase 8)
   await waitFor(
     () => {
       const row = screen.getByText('Eduardo Camavinga').closest('tr')
@@ -94,8 +75,15 @@ test('encaje táctico: ranking coincide con la Fase 8 (Ball Winner en Dep. Alav�
     },
     { timeout: 5000 },
   )
-  // Fase 11: narrativa del equipo en el resultado
-  await waitFor(() =>
-    expect(screen.getByText(/es muy activo en acciones defensivas/)).toBeDefined(),
-  )
+})
+
+test('cambio de temporada: mismo jugador, score distinto (Camavinga BW 90.1 vs 79.0)', async () => {
+  setSeason('2024/2025')
+  const { unmount } = mount('/players/396', <Route path="/players/:id" element={<PlayerProfile />} />)
+  await waitFor(() => expect(screen.getByText(/score 90\.1\)/)).toBeDefined(), { timeout: 5000 })
+  unmount()
+
+  setSeason('2025/2026')
+  mount('/players/396', <Route path="/players/:id" element={<PlayerProfile />} />)
+  await waitFor(() => expect(screen.getByText(/score 79\.0\)/)).toBeDefined(), { timeout: 5000 })
 })

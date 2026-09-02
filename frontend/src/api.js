@@ -1,7 +1,15 @@
-// Cliente de la API de la Fase 9. Sin auth, CORS abierto.
-// El frontend NO tiene lógica de negocio: pide y muestra.
+// Cliente de la API. Sin auth, CORS abierto.
+// Fase 12a: temporada global. setSeason() la fija; se añade ?season= a todo.
 
 const BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
+
+let _season = null // nombre de temporada, ej '2025/2026'; null = default del backend
+export function setSeason(name) {
+  _season = name || null
+}
+export function getSeason() {
+  return _season
+}
 
 async function req(path, opts) {
   let res
@@ -25,7 +33,9 @@ async function req(path, opts) {
 
 const qs = (params) => {
   const p = new URLSearchParams()
-  for (const [k, v] of Object.entries(params || {})) {
+  const merged = { ...(params || {}) }
+  if (_season && merged.season === undefined) merged.season = _season
+  for (const [k, v] of Object.entries(merged)) {
     if (v !== undefined && v !== null && v !== '') p.set(k, v)
   }
   const s = p.toString()
@@ -33,16 +43,17 @@ const qs = (params) => {
 }
 
 export const api = {
+  seasons: () => req('/seasons'),
   players: (filters) => req(`/players${qs(filters)}`),
-  player: (id) => req(`/players/${id}`),
+  player: (id) => req(`/players/${id}${qs()}`),
   playerSimilar: (id, filters) => req(`/players/${id}/similar${qs(filters)}`),
-  playerRoles: (id) => req(`/players/${id}/roles`),
+  playerRoles: (id) => req(`/players/${id}/roles${qs()}`),
   playerBestTeams: (id, filters) => req(`/players/${id}/best-teams${qs(filters)}`),
-  teams: () => req('/teams'),
-  teamStyle: (id) => req(`/teams/${id}/style`),
+  teams: () => req(`/teams${qs()}`),
+  teamStyle: (id) => req(`/teams/${id}/style${qs()}`),
   roles: () => req('/roles'),
   tacticalFit: (body) =>
-    req('/scouting/tactical-fit', {
+    req(`/scouting/tactical-fit${qs()}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),

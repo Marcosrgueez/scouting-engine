@@ -96,9 +96,9 @@ def _load_json(path):
         return json.load(fh)
 
 
-def _roster_player_ids():
-    """IDs de jugador del roster de Sportmonks (players_raw.json de Fase 0)."""
-    roster = _load_json(os.path.join(_SM_DIR, "players_raw.json"))
+def _roster_player_ids(sm_dir=_SM_DIR):
+    """IDs de jugador del roster de Sportmonks (players_raw.json)."""
+    roster = _load_json(os.path.join(sm_dir, "players_raw.json"))
     ids = []
     seen = set()
     for team in roster.get("teams", []):
@@ -121,7 +121,7 @@ def _sportmonks_token():
     return os.getenv("SPORTMONKS_API_TOKEN")
 
 
-def _fetch_player_stats(player_id, season_id, token):
+def _fetch_player_stats(player_id, season_id, token, stats_dir=_STATS_DIR):
     import requests
 
     url = f"https://api.sportmonks.com/v3/football/players/{player_id}"
@@ -133,7 +133,9 @@ def _fetch_player_stats(player_id, season_id, token):
     resp = requests.get(url, params=params, timeout=20)
     resp.raise_for_status()
     payload = resp.json()
-    out_path = os.path.join(_STATS_DIR, f"{player_id}.json")
+    if not os.path.isdir(stats_dir):
+        os.makedirs(stats_dir)
+    out_path = os.path.join(stats_dir, f"{player_id}.json")
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
     return payload
@@ -160,21 +162,26 @@ def _upsert_returning_id(session, model, values, index_elements, update_cols):
 # ETL
 # ---------------------------------------------------------------------------
 
-def run(dry_run=False, limit=None, only_players=None, fetch_missing=False):
+def run(dry_run=False, limit=None, only_players=None, fetch_missing=False, season_dir=None):
     started = time.monotonic()
 
-    context = Context.model_validate(_load_json(os.path.join(_SM_DIR, "context.json")))
-    teams_raw = [TeamRaw.model_validate(t) for t in _load_json(os.path.join(_SM_DIR, "teams.json"))["data"]]
+    # season_dir="s25659" -> raw_data/sportmonks/s25659/ (Fase 12a, multi-temporada).
+    # None -> el layout plano de 2024/25 (Fases 0-8).
+    sm_dir = os.path.join(_SM_DIR, season_dir) if season_dir else _SM_DIR
+    stats_dir = os.path.join(sm_dir, "player_stats")
+
+    context = Context.model_validate(_load_json(os.path.join(sm_dir, "context.json")))
+    teams_raw = [TeamRaw.model_validate(t) for t in _load_json(os.path.join(sm_dir, "teams.json"))["data"]]
     teams_by_sm_id = {t.id: t for t in teams_raw}
     positions_meta = {
         pid: PositionMeta.model_validate(meta)
-        for pid, meta in _load_json(os.path.join(_SM_DIR, "positions_map.json"))["players"].items()
+        for pid, meta in _load_json(os.path.join(sm_dir, "positions_map.json"))["players"].items()
     }
 
     if only_players:
         target_ids = list(only_players)
     else:
-        target_ids = _roster_player_ids()
+        target_ids = _roster_player_ids(sm_dir)
         if limit:
             target_ids = target_ids[:limit]
 
@@ -223,8 +230,8 @@ def run(dry_run=False, limit=None, only_players=None, fetch_missing=False):
         season_id = _upsert_returning_id(
             session, Season,
             {"name": context.season_name or "2024/2025",
-             "start_date": datetime.date(2024, 8, 15),
-             "end_date": datetime.date(2025, 5, 25),
+             "start_date": context.start_date or datetime.date(2024, 8, 15),
+             "end_date": context.end_date or datetime.date(2025, 5, 25),
              "sportmonks_season_id": context.season_id},
             ["sportmonks_season_id"], ["name", "start_date", "end_date"],
         )
@@ -241,7 +248,7 @@ def run(dry_run=False, limit=None, only_players=None, fetch_missing=False):
 
         # --- jugadores ---
         for i, sm_pid in enumerate(target_ids, 1):
-            stats_path = os.path.join(_STATS_DIR, f"{sm_pid}.json")
+            stats_path = os.path.join(stats_dir, f"{sm_pid}.json")
             if not os.path.isfile(stats_path):
                 if fetch_missing:
                     if token is None:
@@ -251,7 +258,7 @@ def run(dry_run=False, limit=None, only_players=None, fetch_missing=False):
                         report["missing_file"].append(sm_pid)
                         continue
                     log.info("descargando stats que faltaban para %s", sm_pid)
-                    _fetch_player_stats(sm_pid, context.season_id, token)
+                    _fetch_player_stats(sm_pid, context.season_id, token, stats_dir)
                     report["fetched"] += 1
                 else:
                     report["missing_file"].append(sm_pid)
@@ -294,10 +301,15 @@ def run(dry_run=False, limit=None, only_players=None, fetch_missing=False):
                  "primary_position_id", "photo_url"],
             )
 
-            # idempotencia: se borran las etapas y stats de este jugador y se
-            # reinsertan (el cascade borra las player_statistics).
+            # idempotencia: se borran las etapas y stats de este jugador EN
+            # ESTA TEMPORADA y se reinsertan (el cascade borra las
+            # player_statistics). Scoped por season_id: un jugador que jugo
+            # varias temporadas conserva las de las otras (Fase 12a).
             session.execute(
-                delete(PlayerTeamSeason).where(PlayerTeamSeason.player_id == player_pk)
+                delete(PlayerTeamSeason).where(
+                    PlayerTeamSeason.player_id == player_pk,
+                    PlayerTeamSeason.season_id == season_id,
+                )
             )
 
             entries = sorted(profile.statistics, key=lambda e: e.team_id)
@@ -399,6 +411,9 @@ def main():
     ap.add_argument("--players", help="lista de sportmonks_player_id separados por coma")
     ap.add_argument("--fetch-missing", action="store_true",
                     help="descargar de Sportmonks los stats que falten (cuida la cuota)")
+    ap.add_argument("--season-dir", default=None,
+                    help="subdirectorio de raw_data/sportmonks/ (ej 's25659' para LaLiga 25/26). "
+                         "Sin esto, el layout plano de 2024/25.")
     args = ap.parse_args()
 
     only_players = None
@@ -406,7 +421,7 @@ def main():
         only_players = [int(x) for x in args.players.split(",") if x.strip()]
 
     run(dry_run=args.dry_run, limit=args.limit, only_players=only_players,
-        fetch_missing=args.fetch_missing)
+        fetch_missing=args.fetch_missing, season_dir=args.season_dir)
 
 
 if __name__ == "__main__":

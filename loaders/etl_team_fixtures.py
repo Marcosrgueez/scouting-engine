@@ -103,6 +103,12 @@ _SM_DIR = os.path.join(_DATA_DIR, "raw_data", "sportmonks")
 _FIXTURES_DIR = os.path.join(_SM_DIR, "fixtures")
 
 
+def _fixtures_dir(season_dir=None):
+    # season_dir="s25659" -> raw_data/sportmonks/s25659/fixtures/ (Fase 12a).
+    # None -> raw_data/sportmonks/fixtures/ (2024/25, Fases 0-8).
+    return os.path.join(_SM_DIR, season_dir, "fixtures") if season_dir else _FIXTURES_DIR
+
+
 def _load_json(path):
     with open(path, "r", encoding="utf-8") as fh:
         return json.load(fh)
@@ -121,15 +127,11 @@ def _sportmonks_token():
 # Descarga (bulk paginado)
 # ---------------------------------------------------------------------------
 
-def _page_path(n):
-    return os.path.join(_FIXTURES_DIR, f"page_{n:02d}.json")
-
-
-def _download_all_pages(sportmonks_season_id, token):
+def _download_all_pages(sportmonks_season_id, token, fixtures_dir):
     import requests
 
-    if not os.path.isdir(_FIXTURES_DIR):
-        os.makedirs(_FIXTURES_DIR)
+    if not os.path.isdir(fixtures_dir):
+        os.makedirs(fixtures_dir)
 
     pages = []
     page = 1
@@ -144,7 +146,7 @@ def _download_all_pages(sportmonks_season_id, token):
         resp = requests.get(f"{SPORTMONKS_BASE}/fixtures", params=params, timeout=40)
         resp.raise_for_status()
         payload = resp.json()
-        with open(_page_path(page), "w", encoding="utf-8") as fh:
+        with open(os.path.join(fixtures_dir, f"page_{page:02d}.json"), "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
         pages.append(payload)
         pg = payload.get("pagination", {})
@@ -157,26 +159,26 @@ def _download_all_pages(sportmonks_season_id, token):
     return pages
 
 
-def _load_cached_pages():
-    if not os.path.isdir(_FIXTURES_DIR):
+def _load_cached_pages(fixtures_dir):
+    if not os.path.isdir(fixtures_dir):
         return []
-    files = sorted(f for f in os.listdir(_FIXTURES_DIR) if f.startswith("page_") and f.endswith(".json"))
-    return [_load_json(os.path.join(_FIXTURES_DIR, f)) for f in files]
+    files = sorted(f for f in os.listdir(fixtures_dir) if f.startswith("page_") and f.endswith(".json"))
+    return [_load_json(os.path.join(fixtures_dir, f)) for f in files]
 
 
-def _get_fixtures(sportmonks_season_id, refetch, offline):
-    cached = _load_cached_pages()
+def _get_fixtures(sportmonks_season_id, refetch, offline, fixtures_dir):
+    cached = _load_cached_pages(fixtures_dir)
     if cached and not refetch:
-        log.info("usando %s paginas cacheadas en %s", len(cached), _FIXTURES_DIR)
+        log.info("usando %s paginas cacheadas en %s", len(cached), fixtures_dir)
         pages = cached
     elif offline:
-        raise RuntimeError(f"--offline y no hay paginas en {_FIXTURES_DIR}. Quita --offline para descargar.")
+        raise RuntimeError(f"--offline y no hay paginas en {fixtures_dir}. Quita --offline para descargar.")
     else:
         token = _sportmonks_token()
         if not token:
             raise RuntimeError("Falta SPORTMONKS_API_TOKEN (en scouting-engine/.env o data-experiment/.env).")
         log.info("descargando la temporada completa (bulk, per_page=%s)...", PER_PAGE)
-        pages = _download_all_pages(sportmonks_season_id, token)
+        pages = _download_all_pages(sportmonks_season_id, token, fixtures_dir)
 
     fixtures = []
     for pg in pages:
@@ -262,9 +264,10 @@ def _stat_rows(own_codes, opp_codes, team_stat_types):
 # ETL
 # ---------------------------------------------------------------------------
 
-def run(dry_run=False, refetch=False, offline=False):
+def run(dry_run=False, refetch=False, offline=False, sportmonks_season_id=None, season_dir=None):
     started = time.monotonic()
     session = get_session()
+    fixtures_dir = _fixtures_dir(season_dir)
     report = {
         "fixtures_total": 0,
         "fixtures_loaded": 0,
@@ -280,7 +283,18 @@ def run(dry_run=False, refetch=False, offline=False):
     }
 
     try:
-        season = session.scalar(select(Season))
+        if sportmonks_season_id is not None:
+            season = session.scalar(
+                select(Season).where(Season.sportmonks_season_id == sportmonks_season_id)
+            )
+        else:
+            seasons = session.scalars(select(Season)).all()
+            if len(seasons) > 1:
+                raise RuntimeError(
+                    "Hay varias temporadas cargadas; pasa --sportmonks-season-id "
+                    f"(disponibles: {[(s.name, s.sportmonks_season_id) for s in seasons]})."
+                )
+            season = seasons[0] if seasons else None
         competition = session.scalar(select(Competition))
         if season is None or competition is None:
             raise RuntimeError("Faltan season/competition. Ejecuta la Fase 2 (loaders.etl_laliga) primero.")
@@ -295,7 +309,7 @@ def run(dry_run=False, refetch=False, offline=False):
             for t in session.scalars(select(Team)).all()
         }
 
-        fixtures = _get_fixtures(season.sportmonks_season_id, refetch, offline)
+        fixtures = _get_fixtures(season.sportmonks_season_id, refetch, offline, fixtures_dir)
         report["fixtures_total"] = len(fixtures)
 
         # --- idempotencia: borra la temporada y recarga ---
@@ -451,8 +465,13 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--refetch", action="store_true", help="fuerza volver a descargar las 8 paginas")
     ap.add_argument("--offline", action="store_true", help="falla si no hay JSON cacheado (no descarga)")
+    ap.add_argument("--sportmonks-season-id", type=int, default=None,
+                    help="obligatorio si hay >1 temporada cargada (LaLiga 25/26 = 25659)")
+    ap.add_argument("--season-dir", default=None,
+                    help="subdirectorio de raw_data/sportmonks/ para el cache de fixtures (ej 's25659')")
     args = ap.parse_args()
-    run(dry_run=args.dry_run, refetch=args.refetch, offline=args.offline)
+    run(dry_run=args.dry_run, refetch=args.refetch, offline=args.offline,
+        sportmonks_season_id=args.sportmonks_season_id, season_dir=args.season_dir)
 
 
 if __name__ == "__main__":

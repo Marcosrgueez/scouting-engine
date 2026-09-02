@@ -39,6 +39,7 @@ class TacticalFitRankingItem(BaseModel):
 class TacticalFitResponse(BaseModel):
     team_id: int
     team_name: str
+    season: str
     role_id: int
     role_code: str
     role_label: str

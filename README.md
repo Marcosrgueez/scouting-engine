@@ -3,12 +3,14 @@
 Motor de scouting de fútbol. Código de producción del proyecto (el
 experimento de validación de datos vive aparte, en `../data-experiment/`).
 
-**Fase actual: 11 — foto, resumen narrativo, fit invertido.** Funciones
-nuevas sobre LaLiga 2024/25 (la migración a 2025/26 + Segunda es la
-Fase 12). Resúmenes por **reglas, sin LLM** (deterministas y auditables).
+**Fase actual: 12a — multi-temporada.** LaLiga **2024/25 y 2025/26**
+conviven en las mismas tablas (diferenciadas por `season_id`); la API y el
+frontend tienen selector de temporada (por defecto, la más reciente).
+Segunda División queda para la Fase 12b (pendiente de reconfigurar el plan
+de Sportmonks — ver `../data-experiment/docs/fase12_migration_investigation.md`).
 (Fases previas: 1 esquema, 2 ETL, 3 percentiles, 5 Player Role Score,
-6 Similarity Engine, 7 Team Style Profile, 8 Tactical Fit Score, 9 API
-FastAPI, 10 Frontend.)
+6 Similarity Engine, 7 Team Style Profile, 8 Tactical Fit Score, 9 API,
+10 Frontend, 11 resúmenes narrativos.)
 
 ## Requisitos
 
@@ -37,19 +39,23 @@ python -m db.create_schema
 # Smoke test (Fase 1): cargar solo los 13 jugadores de prueba:
 python -m loaders.smoke_test_load
 
-# ETL masivo (Fase 2): cargar el roster completo de LaLiga.
+# ETL masivo (Fase 2): cargar el roster completo de LaLiga 24/25.
 python -m loaders.etl_laliga --dry-run --limit 14   # prueba rapida
-python -m loaders.etl_laliga --dry-run              # dry-run completo (rollback)
 python -m loaders.etl_laliga                        # carga real (idempotente)
+# LaLiga 25/26 (Fase 12a): mismo pipeline, otra temporada. Convive con 24/25.
+#   1. descargar el crudo: cd ../data-experiment && python -m scripts.10_fetch_season --season-id 25659
+python -m loaders.etl_laliga --season-dir s25659    # DELETE scoped por season_id, no toca 24/25
 
 # ETL de partidos (Fase 7): team_fixtures + team_fixture_statistics.
-python -m loaders.etl_team_fixtures --dry-run       # descarga (8 pags) + carga + rollback
-python -m loaders.etl_team_fixtures                 # carga real (idempotente)
-python -m loaders.etl_team_fixtures --offline       # solo JSON cacheado, sin API
+python -m loaders.etl_team_fixtures                                   # 24/25 (si es la unica temporada)
+python -m loaders.etl_team_fixtures --sportmonks-season-id 25659 --season-dir s25659   # 25/26
+python -m loaders.etl_team_fixtures --sportmonks-season-id 23621 --offline             # 24/25 explicito
 
-# Percentiles (Fase 3): normalizar per-90 y rankear por bucket de posicion.
-python -m analysis.percentiles --dry-run            # calcula y hace rollback
-python -m analysis.percentiles                      # umbral por defecto 900 min
+# Analisis (Fases 3/5/6/8). Todos toman --season-id (id interno de la BD)
+# para recalcular una sola temporada; sin el, procesan todas las cargadas
+# (el PARTITION separa por season+competition, no se contaminan).
+python -m analysis.percentiles                      # umbral 900 min
+python -m analysis.percentiles --season-id 3        # solo 25/26 (DELETE scoped)
 python -m analysis.percentiles --min-minutes 750    # el umbral es un parametro
 
 # Player Role Score (Fase 5): score de encaje 0-100 por rol, con desglose.
@@ -72,8 +78,11 @@ python -m analysis.tactical_fit --team "FC Barcelona" --role ball_winner --top 1
 python -m analysis.tactical_fit --player "Isco" --team "Osasuna" --by-formation --explain
 python -m analysis.tactical_fit --player "Rodri" --w-role 0.6 --w-style 0.4   # peso ajustable
 
-# API (Fase 9): expone todo lo anterior por HTTP.
+# API (Fase 9 + 12a): expone todo por HTTP. ?season= en cada endpoint
+# (id, sportmonks_season_id o nombre '2025/2026'); por defecto la mas reciente.
 python -m uvicorn api.main:app --reload        # -> http://127.0.0.1:8000/docs
+#   GET /seasons               -> temporadas cargadas (para el selector del frontend)
+#   GET /players?season=2024/2025   -> jugadores de esa temporada
 
 # Frontend (Fase 10): React + Vite. Necesita la API corriendo.
 cd frontend && npm install && npm run dev      # -> http://localhost:5173
@@ -331,9 +340,16 @@ python -m uvicorn api.main:app --reload   # http://127.0.0.1:8000/docs
 poblaron). El Tactical Fit se calcula **en vivo por request** (función de
 Fase 8), no se cachea.
 
+**Fase 12a — `?season=`:** casi todos los endpoints aceptan `season`
+(id interno, `sportmonks_season_id` o nombre `'2025/2026'`); sin él, la
+temporada más reciente cargada. Cada consulta filtra por `season_id` — las
+dos temporadas nunca se mezclan. La edad se calcula a fin de la temporada
+consultada (no "hoy"). `/roles` es catálogo, no lleva `season`.
+
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/players` | Lista paginada (`offset`/`limit`/`total_count`). Filtros: `bucket`, `team_id`, `min_minutes` (900), `age_min`, `age_max`, `side`. |
+| GET | `/seasons` | Temporadas cargadas + cuál es la default (para el selector del frontend). |
+| GET | `/players` | Lista paginada (`offset`/`limit`/`total_count`). Filtros: `bucket`, `team_id`, `min_minutes` (900), `age_min`, `age_max`, `side`, `season`. |
 | GET | `/players/{id}` | Bio + `photo_url` + equipo + bucket/lado + percentiles + **`summary`** (frase por reglas: mejor rol + sus métricas core, Fase 11). 404 si no existe; `percentiles: []` si < umbral. |
 | GET | `/players/{id}/similar` | Top-20 de `player_similarity` ya calculado. Filtros `age_max`/`side` **sobre el resultado** (rank conserva su número). |
 | GET | `/players/{id}/roles` | Role scores del jugador + desglose completo de `player_role_score_breakdown`. |

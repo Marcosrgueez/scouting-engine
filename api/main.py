@@ -19,7 +19,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import players, roles, scouting, teams
+from api.routers import players, roles, scouting, seasons, teams
 
 app = FastAPI(
     title="Scouting Engine API",
@@ -39,6 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(seasons.router)
 app.include_router(players.router)
 app.include_router(teams.router)
 app.include_router(roles.router)

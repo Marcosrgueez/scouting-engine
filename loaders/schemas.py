@@ -28,6 +28,10 @@ class Context(BaseModel):
     league_name: str = "La Liga"
     season_id: int
     season_name: str = ""
+    # Fase 12a: fechas de la temporada (las trae scripts/10). El context
+    # plano de 2024/25 no las tiene -> el ETL usa un fallback.
+    start_date: Optional[datetime.date] = None
+    end_date: Optional[datetime.date] = None
 
 
 class TeamRaw(BaseModel):

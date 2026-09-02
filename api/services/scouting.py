@@ -13,20 +13,26 @@ from sqlalchemy.orm import Session
 
 from analysis.narrative import team_style_narrative
 from analysis.tactical_fit import DEFAULT_W_ROLE, DEFAULT_W_STYLE, tactical_fit
-from db.models import Role, Team, TeamStyleAxis
+from db.models import Role, Season, Team, TeamStyleAxis
 
 
-def _available_formations(db: Session, team_id: int) -> list[str]:
+def _available_formations(db: Session, team_id: int, season_id: int) -> list[str]:
     rows = db.execute(
         select(TeamStyleAxis.formation)
-        .where(TeamStyleAxis.team_id == team_id, TeamStyleAxis.formation.isnot(None))
+        .where(
+            TeamStyleAxis.team_id == team_id,
+            TeamStyleAxis.season_id == season_id,
+            TeamStyleAxis.formation.isnot(None),
+        )
         .distinct()
         .order_by(TeamStyleAxis.formation)
     ).scalars().all()
     return list(rows)
 
 
-def tactical_fit_ranking(db: Session, *, team_id: int, role_id: int, formation: str | None) -> dict:
+def tactical_fit_ranking(
+    db: Session, season: Season, *, team_id: int, role_id: int, formation: str | None
+) -> dict:
     team = db.get(Team, team_id)
     if team is None:
         raise HTTPException(status_code=404, detail=f"Equipo {team_id} no encontrado")
@@ -35,19 +41,20 @@ def tactical_fit_ranking(db: Session, *, team_id: int, role_id: int, formation: 
     if role is None:
         raise HTTPException(status_code=404, detail=f"Rol {role_id} no encontrado")
 
-    # ¿tiene el equipo perfil de estilo? (agregado siempre debería existir)
     has_aggregate = db.scalar(
         select(TeamStyleAxis.id)
-        .where(TeamStyleAxis.team_id == team_id, TeamStyleAxis.formation.is_(None))
+        .where(
+            TeamStyleAxis.team_id == team_id,
+            TeamStyleAxis.season_id == season.id,
+            TeamStyleAxis.formation.is_(None),
+        )
         .limit(1)
     )
     if has_aggregate is None:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"El equipo '{team.name}' no tiene perfil de estilo calculado. "
-                "Ejecuta 'python -m analysis.team_style'."
-            ),
+            detail=f"El equipo '{team.name}' no tiene perfil de estilo en {season.name} "
+            "(¿jugó esa temporada?).",
         )
 
     if formation is not None:
@@ -55,18 +62,19 @@ def tactical_fit_ranking(db: Session, *, team_id: int, role_id: int, formation: 
             select(TeamStyleAxis.id)
             .where(
                 TeamStyleAxis.team_id == team_id,
+                TeamStyleAxis.season_id == season.id,
                 TeamStyleAxis.formation == formation,
             )
             .limit(1)
         )
         if exists is None:
-            avail = _available_formations(db, team_id)
+            avail = _available_formations(db, team_id, season.id)
             raise HTTPException(
                 status_code=422,
                 detail=(
                     f"La formación '{formation}' de '{team.name}' no tiene muestra suficiente "
-                    f"(mínimo 5 partidos, criterio de la Fase 7). Formaciones con perfil: "
-                    f"{avail or 'ninguna'}. Omite 'formation' para usar el agregado del equipo."
+                    f"en {season.name} (mínimo 5 partidos). Formaciones con perfil: "
+                    f"{avail or 'ninguna'}. Omite 'formation' para usar el agregado."
                 ),
             )
 
@@ -78,12 +86,13 @@ def tactical_fit_ranking(db: Session, *, team_id: int, role_id: int, formation: 
         by_formation=False,
         w_role=DEFAULT_W_ROLE,
         w_style=DEFAULT_W_STYLE,
+        season_id=season.id,
     )
 
-    # narrativa del estilo del equipo (el perfil que se usó: formación o agregado)
     style_axes = db.execute(
         select(TeamStyleAxis.style_axis, TeamStyleAxis.percentile).where(
             TeamStyleAxis.team_id == team_id,
+            TeamStyleAxis.season_id == season.id,
             TeamStyleAxis.formation == formation
             if formation is not None
             else TeamStyleAxis.formation.is_(None),
@@ -111,6 +120,7 @@ def tactical_fit_ranking(db: Session, *, team_id: int, role_id: int, formation: 
     return {
         "team_id": team.id,
         "team_name": team.name,
+        "season": season.name,
         "role_id": role.id,
         "role_code": role.code,
         "role_label": role.label,

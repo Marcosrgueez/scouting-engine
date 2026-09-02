@@ -13,6 +13,7 @@ class TeamListItem(BaseModel):
 
 
 class TeamListResponse(BaseModel):
+    season: str
     items: list[TeamListItem]
 
 
@@ -36,6 +37,7 @@ class FormationBelowThreshold(BaseModel):
 class TeamStyleResponse(BaseModel):
     team_id: int
     team_name: str
+    season: str
     min_matches: int = Field(description="umbral de partidos por formación (Fase 7); por debajo no hay perfil de estilo")
     narrative: str = Field(description="descripción del estilo por reglas (Fase 11), sin LLM")
     aggregate: TeamStyleProfile

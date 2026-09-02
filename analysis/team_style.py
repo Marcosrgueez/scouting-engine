@@ -96,18 +96,20 @@ prof_long AS (
     UNION ALL SELECT team_id, season_id, formation, n, 'press_intensity',    press_intensity    FROM prof
     UNION ALL SELECT team_id, season_id, formation, n, 'directness',         directness         FROM prof
 ),
-ref AS (  -- los 20 agregados de equipo, por eje
-    SELECT axis, val FROM prof_long WHERE formation IS NULL
+ref AS (  -- los 20 agregados de equipo, por eje y TEMPORADA (pool separado por competicion-temporada)
+    SELECT season_id, axis, val FROM prof_long WHERE formation IS NULL
 ),
 ref_n AS (
-    SELECT COUNT(DISTINCT team_id) AS n_teams FROM prof_long WHERE formation IS NULL
+    SELECT season_id, COUNT(DISTINCT team_id) AS n_teams
+    FROM prof_long WHERE formation IS NULL
+    GROUP BY season_id
 ),
 scored AS (
     SELECT p.team_id, p.season_id, p.formation, p.n, p.axis, p.val,
            100.0 * (
-               (SELECT COUNT(*) FROM ref r WHERE r.axis = p.axis AND r.val < p.val)
-               + 0.5 * (SELECT COUNT(*) FROM ref r WHERE r.axis = p.axis AND r.val = p.val)
-           ) / (SELECT n_teams FROM ref_n) AS percentile
+               (SELECT COUNT(*) FROM ref r WHERE r.season_id = p.season_id AND r.axis = p.axis AND r.val < p.val)
+               + 0.5 * (SELECT COUNT(*) FROM ref r WHERE r.season_id = p.season_id AND r.axis = p.axis AND r.val = p.val)
+           ) / (SELECT n_teams FROM ref_n WHERE season_id = p.season_id) AS percentile
     FROM prof_long p
 )
 SELECT * FROM scored

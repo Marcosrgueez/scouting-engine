@@ -1194,3 +1194,130 @@ Smoke test (`npm test`, vitest+jsdom): 5/5, ahora cubren foto
 **Pendientes (Fase 12):** migración a 2025/26 + Segunda División (2ª pasada
 del ETL con otro `season_id`); reconsiderar el entrenador solo para la
 temporada EN CURSO (donde `active: true` sí es correcto).
+
+## 2026-09-02 — Fase 12a: cargar LaLiga 2025/26 + soporte multi-temporada
+
+Precedida por la investigación (`data-experiment/docs/fase12_migration_investigation.md`).
+LaLiga 24/25 (season_id interno 1) y 25/26 (id 3) **conviven** en las
+mismas tablas, diferenciadas por `season_id`. Segunda queda para 12b
+(no accesible en el plan de Sportmonks).
+
+### 1. Descarga del crudo — `data-experiment/scripts/10_fetch_season.py`
+
+Nuevo script parametrizado por `--season-id`. Produce
+`raw_data/sportmonks/s25659/` (context/teams/players_raw/positions_map/
+player_stats/*/fixtures/page_*). NO toca el layout plano de 24/25.
+Confirmado: los `detailed_position_id` de Sportmonks son type-ids
+**globales** (no cambian entre temporadas) → el mapeo de posiciones de
+Fase 4 se reutiliza tal cual. Descarga real: ~800 peticiones, ~9 min
+(8m25s los 750 player_stats), cuota nunca bajó de 1975/2000.
+
+### 2. ETL — dos bugs de multi-temporada corregidos
+
+**Bug 1 (grave, `etl_laliga.py`): el DELETE de idempotencia por jugador
+NO estaba scopeado por temporada.** `delete(PlayerTeamSeason).where(player_id
+== pk)` borraba TODAS las etapas del jugador. Al cargar 25/26, los ~440
+jugadores que jugaron ambas temporadas perdieron su etapa 24/25 (777 → 329
+pts). **Detectado en la validación**, arreglado (`+ season_id == season_id`),
+y 24/25 restaurado re-ejecutando su ETL (idempotente, ahora scoped) → 777
+pts / 27152 stats exactos. Sin `--drop`.
+
+**Bug 2 (`analysis/team_style.py`): el pool de referencia del percentil no
+estaba scopeado por temporada.** Con 40 agregados de equipo (20×2) y `ref_n`
+= `COUNT(DISTINCT team_id)` ≈ 23, el percentil podía salir >100 →
+CheckViolation. Arreglado: `ref` y `ref_n` correlacionados por
+`season_id` (cada perfil se rankea vs los 20 agregados de SU temporada).
+
+Cambios de firma (todos con default = comportamiento 24/25):
+- `etl_laliga.run(..., season_dir=None)` + `--season-dir s25659`.
+- `etl_team_fixtures.run(..., sportmonks_season_id=None, season_dir=None)`
+  + `--sportmonks-season-id` (obligatorio con >1 temporada) + `--season-dir`.
+- `Context` schema (loaders/schemas.py) + `start_date`/`end_date` (scripts/10
+  las trae; el context plano de 24/25 no → el ETL usa fallback hardcodeado).
+
+### 3. Recálculo analítico
+
+`percentiles` / `role_scores` / `similarity` / `team_style` re-ejecutados
+sin `--season-id` (procesan las dos; el PARTITION separa por
+season+competition). Resultado:
+
+| tabla | 24/25 | 25/26 |
+|---|---|---|
+| player_percentiles | 11496 | 11765 |
+| player_role_scores | 524 | 533 |
+| player_similarity | 6720 | 6880 |
+| team_fixtures | 760 | 760 |
+| team_style_axes | 325 | 325 |
+
+Verificado que `--season-id 3` solo toca 25/26 (24/25 sigue en 524).
+
+### 4. API — `?season=` (el cambio real de la fase)
+
+- `api/dependencies.py`: `resolve_season` (dependency) — acepta `?season=`
+  (id / sportmonks_id / nombre), **por defecto la más reciente por
+  `end_date`**. `age_reference_date(season)` = fin de esa temporada.
+- **~12 consultas** de servicio ganaron `.where(X.season_id == season.id)`:
+  `players.py` (`_minutes_subq`, `_latest_team_subq`, list, profile,
+  similar, roles, best_teams, `_team_narratives`), `teams.py` (list_teams
+  ahora solo devuelve equipos que jugaron esa temporada; get_team_style),
+  `scouting.py` (tactical_fit_ranking + `_available_formations`).
+  `analysis/narrative.py::player_role_summary` + param `season_id`.
+  `tactical_fit()` ya tomaba `season_id` → se le pasa.
+- Endpoint nuevo `GET /seasons`.
+- Respuestas de `/teams`, `/teams/{id}/style`, `/scouting/tactical-fit`
+  llevan ahora `season`.
+
+### 5. Frontend — selector de temporada
+
+- `api.js`: `setSeason(name)` fija una temporada global; `qs()` añade
+  `?season=` a todo. `api.seasons()`.
+- `App.jsx`: al montar, `GET /seasons` → default. Selector `<select>` en el
+  topbar (solo si hay >1 temporada). Al cambiar: `key={season}` en `<main>`
+  → remonta el contenido → refetch limpio, sin mezclar. Mismos tokens
+  (`.season-picker`, mono, hairline).
+
+### Validación de sanidad
+
+**24/25 intacto (byte a byte vs baseline pre-fase):**
+- Camavinga Ball Winner 24/25 = **90.12** (= Fase 5)
+- Pedri DLP 24/25 = **90.00**
+- Barça posesión pctl 24/25 = **97.50** (= Fase 8)
+- Camavinga similar top-1 24/25 = **Johnny Cardoso** (= Fase 6)
+- tactical-fit 24/25 Alavés Ball Winner → **Camavinga 92.33** (= Fase 8)
+- counts 24/25: 11496 / 524 / 6720 / 760 / 325 — todos iguales.
+
+**25/26 a ojo:**
+- Pedri DLP **95.49** / AP 91.83 (más central bajo Flick, sube). Similar:
+  Arda Güler, Fornals, Bellingham.
+- Arda Güler AP **93.16** (año de explosión con Xabi Alonso). Correcto.
+- Tchouaméni BW **81.64** / AP 25.25 (mismo perfil destructor). Correcto.
+- Dean Huijsen BPCB **72.06** (el central que juega fichado por el Madrid).
+- Camavinga BW **79.0** en 25/26 (baja desde 90.1: menos rol de puro
+  destructor). Zubimendi: sin datos 25/26 (se fue al Arsenal). Correcto.
+
+**Ascendidos / descendidos:**
+- Real Oviedo / Levante / Elche: 38 team_fixtures + team_style_axes en
+  25/26, 0 en 24/25.
+- Real Valladolid / Leganés / Las Palmas: 38 fixtures en 24/25, **0 en
+  25/26**. `/teams/{Valladolid}/style?season=2025/2026` → 404 con mensaje
+  claro. `/teams` en 25/26 no los incluye.
+
+Smoke test (`npm test`): 6/6, ahora incluye "24/25 preservado" y "cambio de
+temporada → score distinto" (Camavinga 90.1 → 79.0). `npm run build` OK,
+`npm run lint` limpio.
+
+### Código
+
+`data-experiment/scripts/10_fetch_season.py` (nuevo) + raw en `s25659/`.
+`loaders/`: etl_laliga (bug fix + `--season-dir`), etl_team_fixtures
+(`--sportmonks-season-id`/`--season-dir`), schemas (Context +fechas).
+`analysis/`: team_style (bug fix pool por temporada), narrative
+(+`season_id`). `api/`: dependencies (resolve_season), routers
+(+`Depends(resolve_season)`), services (~12 filtros de temporada),
+schemas (+`season`), routers/seasons.py (nuevo). Frontend: api.js, App.jsx,
+styles.css, smoke.test.jsx.
+
+**Pendiente (Fase 12b):** Segunda División — reconfigurar el plan de
+Sportmonks (cambiar una liga / add-on / upgrade). El pipeline ya está
+listo: `scripts/10 --season-id <segunda>` + `etl_laliga --season-dir` +
+`analysis --season-id` + la API ya es multi-temporada.

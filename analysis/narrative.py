@@ -37,12 +37,13 @@ _TOP_CORE = 3
 _MIN_CORE = 2
 
 
-def player_role_summary(session: Session, player_id: int) -> dict:
+def player_role_summary(session: Session, player_id: int, *, season_id: int | None = None) -> dict:
     """Devuelve {text, has_role, role_code?, role_label?, score?, drivers?}.
 
     drivers = [{stat_type_code, stat_type_label, percentile, contribution}]
+    season_id: si se da, solo mira los role scores de esa temporada.
     """
-    top = session.execute(
+    q = (
         select(
             PlayerRoleScore.id,
             PlayerRoleScore.role_id,
@@ -56,7 +57,10 @@ def player_role_summary(session: Session, player_id: int) -> dict:
         .where(PlayerRoleScore.player_id == player_id)
         .order_by(PlayerRoleScore.score.desc())
         .limit(1)
-    ).first()
+    )
+    if season_id is not None:
+        q = q.where(PlayerRoleScore.season_id == season_id)
+    top = session.execute(q).first()
 
     if top is None:
         return {"text": NO_ROLE_TEXT, "has_role": False}

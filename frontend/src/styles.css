@@ -101,6 +101,30 @@ th, td { font-variant-numeric: tabular-nums; }
   .nav a:hover { color: var(--text); }
 }
 
+/* selector de temporada (Fase 12a) — a la derecha del topbar */
+.season-picker {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.season-picker select {
+  height: 26px;
+  padding: 0 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  transition: border-color 140ms var(--ease-move);
+}
+@media (hover: hover) and (pointer: fine) {
+  .season-picker select:hover { border-color: var(--text-dim); }
+}
+
 .main { flex: 1; padding: 26px 20px 60px; max-width: 1180px; width: 100%; margin: 0 auto; }
 
 .page-head {
