@@ -323,7 +323,7 @@ def get_player_roles(db: Session, season: Season, player_id: int) -> dict:
     ]
     note = (
         "Sin role scores: no llega al umbral de minutos, o su bucket (delantero/portero) no "
-        "tiene ninguno de los 4 roles construibles plenos."
+        "tiene ninguno de los 5 roles construibles plenos."
         if not items
         else "Role scores en los roles que aplican a su bucket, con desglose por métrica."
     )
@@ -370,7 +370,7 @@ def get_best_teams(
             "role_label": None, "role_score": None, "available_roles": [],
             "cross_competition": cross_competition, "warning": None,
             "note": f"Sin role score en {season.competition.name} {season.name}: posición fuera de "
-            "los 4 roles, umbral de minutos no alcanzado, o no jugó esa temporada.",
+            "los 5 roles, umbral de minutos no alcanzado, o no jugó esa temporada.",
             "count": 0, "ranking": [],
         }
 

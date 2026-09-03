@@ -120,10 +120,14 @@ prohíben pero tampoco lo autorizan por escrito, y para un producto que
 persiste datos esa ambigüedad es un riesgo. No se mezclan campos de dos
 proveedores dentro de la misma estadística.
 
-**3. Cuatro roles construibles, no siete.**
+**3. Cinco roles construibles, no siete.**
 Se evaluaron 7 arquetipos contra la completitud real del dato por
-posición. Cuatro se pueden construir con rigor (*Ball Winner*,
-*Deep-Lying Playmaker*, *Advanced Playmaker*, *Ball Playing CB*). *Box-to-Box*
+posición. Se pueden construir con rigor: *Ball Winner*,
+*Deep-Lying Playmaker*, *Advanced Playmaker*, y —tras dividir el
+"Ball Playing CB" original, que combinaba dos facetas anticorrelacionadas y
+comprimía el score ([`docs/DECISIONS.md`](docs/DECISIONS.md))— *Central
+Constructor* (pase y balón largo) y *Central Dominante* (duelo, aéreo,
+corte). *Box-to-Box*
 se queda fuera porque sin datos físicos (distancia, sprints) no se
 distingue de un mediocentro completo posicional; *Pressing Forward* fuera
 porque sin datos de evento por zona no hay forma de medir presión.
@@ -319,7 +323,7 @@ se repite entre ligas.
 | `GET` | `/players/{id}/roles` | Role scores + desglose completo por métrica. |
 | `GET` | `/players/{id}/best-teams` | Tactical Fit invertido: mejores equipos para el jugador. `?cross_competition=true` rankea equipos de las 5 ligas (con aviso). |
 | `GET` | `/teams` · `/teams/{id}/style` | Equipos y perfil de estilo por formación + narrativa. |
-| `GET` | `/roles` | Los 4 roles con su matriz de pesos y de estilo. |
+| `GET` | `/roles` | Los 5 roles con su matriz de pesos y de estilo. |
 | `POST` | `/scouting/tactical-fit` | Ranking de jugadores por encaje en un equipo + rol. Body `cross_competition:true` incluye jugadores de las 5 ligas (con aviso). |
 
 Un jugador por debajo del umbral de minutos devuelve **200 con listas

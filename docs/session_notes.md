@@ -1673,3 +1673,81 @@ táctico puede incluir jugadores/equipos de las 5 competiciones.
 constante), `api/services/{scouting,players}.py`, `api/schemas/{scouting,players}.py`,
 `api/routers/{scouting,players}.py`, `frontend/src/pages/{TacticalFit,PlayerProfile}.jsx`,
 `frontend/src/styles.css`, `frontend/src/smoke.test.jsx`, README.
+
+## 2026-09-03 — Fase 15: dividir Ball Playing CB en dos roles
+
+El diagnóstico de la Fase 14 mostró que `ball_playing_cb` combinaba dos
+sub-perfiles anticorrelacionados (`prec% / long-balls` −0.51,
+`clearances / passes` −0.42), lo que comprimía la dispersión del score a
+desv. 12-14 (vs 15-24 de los otros roles). Decisión ya tomada: separar en
+vez de re-pesar. Detalle y tabla de validación en `docs/DECISIONS.md`
+(entrada 2026-09-03).
+
+### Roles nuevos (id 5 y 6; el 4, ball_playing_cb, eliminado)
+
+| rol | núcleo (3) | apoyo (1.5) | contexto (0.5) | estilo |
+|---|---|---|---|---|
+| `central_constructor` | accurate-passes-percentage, long-balls, long-balls-won | passes | interceptions | +posesión, +precisión |
+| `central_dominante` | duels-won, aeriels-won, clearances | blocked-shots, tackles | interceptions | +press_intensity |
+
+### Qué se hizo con el viejo — ELIMINADO
+
+- `db/migrate_fase15.py` (idempotente): borra los **402 `player_role_scores`
+  + 4020 `player_role_score_breakdown`** de `ball_playing_cb` (6 temporadas),
+  borra el rol (cascade a role_weights/buckets/style_weights), inserta los 2
+  nuevos con sus pesos/buckets/ejes.
+- **No deprecado**: `roles` no tiene columna `active`; añadirla obligaría a
+  filtrar en cada consulta de roles, y `player_role_scores` es dato
+  derivado (recomputable). El histórico queda en git + `DECISIONS.md`.
+- **Cero referencias hardcodeadas a `role_id = 4`** en código: todo por
+  `code` o dinámico. Único sitio de código con el nombre viejo era
+  `smoke.test.jsx` (opción del `<select>`) → cambiado a "Central Constructor".
+- `db/seed_catalogs.py`: `ROLES` y `ROLE_STYLE_WEIGHTS` actualizados (fresh
+  install ya nace con los 5).
+
+### Recálculo + validación
+
+`python -m analysis.role_scores` (todas las temporadas). Resultado:
+
+| rol | jugadores | media | desv (central) |
+|---|---|---|---|
+| Central Constructor | 402 | 50.0 | **17.0-19.1** (era 12.0-14.2) |
+| Central Dominante | 402 | 50.0 | **17.6-20.0** |
+
+Los dos **superan** al viejo rol y a Ball Winner (15.2): sus métricas
+internas correlacionan (todo pase / todo defensa). Los 11 centrales de
+referencia se separan con sentido:
+
+| central (LaLiga 25/26) | Constructor | Dominante | Δ |
+|---|---|---|---|
+| Kike Salas | 54.9 | 89.9 | −35.1 |
+| David Carmo | 64.1 | 80.9 | −16.8 |
+| Dean Huijsen | 82.4 | 53.3 | +29.1 |
+| Marcos Alonso | 84.8 | 35.4 | +49.4 |
+| Daley Blind | 85.2 | 32.9 | +52.2 |
+| José María Giménez | 70.5 | 70.9 | −0.4 |
+
+Repetido en Premier/Serie A/Bundesliga: mismo patrón, Δ de ±40 a ±74
+(Lisandro Martínez Constructor 83 / Dominante 27; Dan Burn 14 / 69; Victor
+Nelsson 13 / 87). Sentinels intactos: Camavinga BW 24/25 **90.12**, Pedri
+DLP 25/26 **95.49**, Barella AP Serie A **93.06**.
+
+### API / frontend
+
+- `/roles` (dinámico) → 5. `/players/{id}/roles`, la narrativa de la ficha
+  (`analysis/narrative.py`, tier='core' dinámico) y el selector de rol de
+  Encaje táctico + "Mejores equipos" (leen `/roles` y `available_roles`)
+  → auto-actualizados. Verificado: Leandro Cabrera "se perfila como Central
+  Dominante (score 54.1): destaca en duelos aéreos ganados (p85)...".
+- tactical-fit `role_id=6` (Central Dominante) en Getafe (presión p97.5) →
+  top Kike Salas fit 92.2.
+- Strings "4 roles" → "5 roles" en routers/services/README.
+- `npm test` **8/8**, build + lint limpios.
+
+### Código
+
+`db/migrate_fase15.py` (nuevo), `db/seed_catalogs.py`, `analysis/role_scores.py`
+(docstring), `api/` (routers/roles, services/roles, services/players
+strings), `frontend/src/smoke.test.jsx`, `README.md`, `docs/DECISIONS.md`
+(entrada), `docs/roles_fase4_mapping.md` + copia en data-experiment (nota),
+`docs/role_audit_top_bottom.md` (regenerado a 5 roles, sigue sin trackear).

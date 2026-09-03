@@ -31,8 +31,8 @@ NO se emite fila para ese jugador-rol (un score renormalizado sobre <60%
 de la senal del rol no es comparable con el resto). Queda contado en el
 resumen.
 
-Sobre LaLiga 2024/25 la cobertura es del 100 % para las 18 metricas de
-los 4 roles en todos los buckets (la imputacion de ceros de Fase 3
+Sobre LaLiga 2024/25 la cobertura es del 100 % para las metricas de
+los 5 roles en todos los buckets (la imputacion de ceros de Fase 3
 garantiza una fila por jugador y metrica), asi que 0 jugadores se ven
 afectados por esta politica hoy; solo importa cuando entren mas ligas.
 

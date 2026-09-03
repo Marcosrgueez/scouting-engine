@@ -15,7 +15,7 @@ router = APIRouter(prefix="/roles", tags=["roles"])
 @router.get(
     "",
     response_model=RolesResponse,
-    summary="Los 4 roles construibles plenos con su definición de pesos",
+    summary="Los 5 roles construibles plenos con su definición de pesos",
 )
 def list_roles(db: Session = Depends(get_db)):
     return svc.list_roles(db)

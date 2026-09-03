@@ -1,5 +1,7 @@
 > **Documento de metodología (archivado).** Registro de una investigación o decisión tomada durante el desarrollo. La validación de datos se hizo en un espacio de trabajo aparte (`data-experiment/`, no incluido en este repositorio); las rutas a `reports/`, `raw_data/` y `scripts/*.py` se refieren a ese espacio, no a este repo. Índice de docs: [`docs/README.md`](./README.md).
 
+> **Actualización 2026-09-03 (Fase 15).** El rol **Ball Playing CB** se dividió en **Central Constructor** (pase, balón largo) y **Central Dominante** (duelo, aéreo, despeje, corte): combinaba dos facetas anticorrelacionadas y eso comprimía la dispersión del score. Ver `DECISIONS.md`, entrada del 2026-09-03. La sección 2 de abajo queda superada en ese punto.
+
 ---
 
 # Fase 4 — Mapa rol → campos → ¿construible? (CERRADO)

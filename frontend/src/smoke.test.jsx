@@ -85,8 +85,8 @@ test('encaje táctico cross-liga: el toggle mezcla las 5 competiciones + muestra
   const selects = screen.getAllByRole('combobox')
   const barcaOpt = within(selects[0]).getByRole('option', { name: 'FC Barcelona' })
   await user.selectOptions(selects[0], barcaOpt.value)
-  const bpcbOpt = within(selects[1]).getByRole('option', { name: 'Ball Playing CB' })
-  await user.selectOptions(selects[1], bpcbOpt.value)
+  const ccOpt = within(selects[1]).getByRole('option', { name: 'Central Constructor' })
+  await user.selectOptions(selects[1], ccOpt.value)
   await user.click(screen.getByRole('checkbox', { name: /todas las competiciones/ }))
   await user.click(screen.getByRole('button', { name: 'Buscar' }))
   await waitFor(() => expect(screen.getByText(/sin ajuste de nivel de liga/)).toBeDefined(), {

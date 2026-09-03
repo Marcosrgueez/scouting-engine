@@ -1,4 +1,4 @@
-"""Servicio de /roles: catálogo de los 4 roles con su definición de pesos.
+"""Servicio de /roles: catálogo de los 5 roles con su definición de pesos.
 
 Lee `roles`, `role_buckets`, `role_weights` (Player Role Score, Fase 5) y
 `role_style_weights` (matriz rol->estilo del Tactical Fit, Fase 8).

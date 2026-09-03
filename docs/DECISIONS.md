@@ -252,3 +252,73 @@ análisis). Estado de los tres pendientes:
    pipeline), con un ~5 % de incertidumbre residual hasta verificar sus
    términos verbatim. La revisión de "mostrar datos en público" (Fase 10)
    sigue abierta y es un análisis aparte.
+
+---
+
+## 2026-09-03 — Ball Playing CB se divide en Central Constructor + Central Dominante
+
+**Estado:** aceptada. Sustituye al rol `ball_playing_cb` de la Fase 5.
+
+**Contexto.** El diagnóstico de la Fase 14 (ver `session_notes.md`) midió por
+qué `ball_playing_cb` tenía la menor dispersión de score de todos los roles
+(desv. 12.0-14.2 vs 15-24 de los demás). El hallazgo:
+
+- **Los datos de entrada NO están comprimidos.** Cada métrica del score es
+  un percentil, y `PERCENT_RANK` los hace uniformes por construcción: en el
+  pool de 69 centrales de LaLiga 25/26, las 10 métricas de `ball_playing_cb`
+  tienen TODAS media 50.0 y desv. 29.3.
+- **La compresión nace de la combinación.** `score = Σ(pctl·peso)/Σpeso`
+  sobre 10 métricas con correlación media entre pares de **+0.05** (casi
+  independientes), y con pares fuertemente **anti**correlacionados:
+  `accurate-passes-percentage / long-balls` **−0.51**,
+  `clearances / passes` −0.42, `precisión / clearances` −0.31.
+- Promediar ~10 percentiles casi independientes colapsa la desv. hacia la
+  media (predicho `28.9·√(Σw²/(Σw)²)` = 11.0; observado 12.0). Las
+  anticorrelaciones lo agravan: el rol mezclaba dos sub-perfiles reales que
+  ningún central maximiza a la vez — el que **construye** (pase corto
+  seguro, balón largo con criterio) y el que **domina el área** (duelo,
+  aéreo, despeje, corte).
+
+**Decisión: separar, no re-pesar.** Dos roles más estrechos y coherentes,
+cada uno con métricas que sí correlacionan entre sí:
+
+| rol | bucket | núcleo (peso 3) | apoyo (1.5) | contexto (0.5) | estilo de equipo |
+|---|---|---|---|---|---|
+| **`central_constructor`** | central | `accurate-passes-percentage`, `long-balls`, `long-balls-won` | `passes` | `interceptions` | +posesión, +precisión de pase |
+| **`central_dominante`** | central | `duels-won`, `aeriels-won`, `clearances` | `blocked-shots`, `tackles` | `interceptions` | +intensidad de presión |
+
+`central_constructor` hereda la compatibilidad de estilo del viejo rol;
+`central_dominante` usa el mismo eje que Ball Winner (`press_intensity`).
+
+**Qué se hizo con `ball_playing_cb`.** Eliminado (rol + `role_weights` +
+`role_buckets` + `role_style_weights` + los 402 `player_role_scores` y sus
+4020 filas de `player_role_score_breakdown`, en las 6 temporadas). No se
+marcó como deprecado: `roles` no tiene columna `active`, añadirla obligaría
+a filtrar en cada consulta que lista roles, y `player_role_scores` es dato
+**derivado** (recomputable, DELETE-scoped + INSERT). El histórico del rol
+—y este razonamiento— quedan en git y en `session_notes.md`. No hay
+referencias hardcodeadas a `role_id = 4` en código; todo se resuelve por
+`code` o dinámicamente desde la tabla. Migración: `db/migrate_fase15.py`.
+
+**Resultado (validación).** Desv. estándar de los dos roles nuevos frente
+al 12.0 del viejo, bucket central:
+
+| temporada | Ball Winner (ref) | Central Constructor | Central Dominante |
+|---|---|---|---|
+| LaLiga 24/25 | 15.9 | 18.5 | 18.7 |
+| LaLiga 25/26 | 15.2 | 17.1 | 17.6 |
+| Segunda 25/26 | 15.3 | 19.1 | 18.7 |
+| Premier 25/26 | 15.3 | 17.8 | 20.0 |
+| Serie A 25/26 | 16.6 | 17.9 | 19.0 |
+| Bundesliga 25/26 | 15.5 | 17.0 | 19.6 |
+
+Los dos superan al viejo rol combinado y a Ball Winner: sus métricas
+internas correlacionan (todo pase / todo defensa), así que la media
+ponderada retiene más señal. Los centrales que antes quedaban aplastados
+en 64-73 ahora se separan: Kike Salas (pésimo pasador, monstruo defensivo)
+Constructor 54.9 / Dominante 89.9; Marcos Alonso y Daley Blind
+(ex-laterales reconvertidos) Constructor ~85 / Dominante ~33-35; José María
+Giménez (dos vías real) 70.5 / 70.9, sin destacar en ninguno.
+
+**Actualiza** la entrada de `roles_fase4_mapping.md` sobre "Ball Playing
+CB": ese rol pasa a ser estos dos.

@@ -113,9 +113,12 @@ STAT_TYPES = [
 
 
 # --- roles (Fase 5) -----------------------------------------------------
-# Los 4 roles "construibles plenos" confirmados en
-# data-experiment/docs/roles_fase4_mapping.md (seccion 2). Pesos por nivel
-# (decision de diseno, no se reabre): core 3, support 1.5, context 0.5.
+# Los 5 roles "construibles plenos". Base: roles_fase4_mapping.md (seccion
+# 2). Fase 15: 'ball_playing_cb' se dividio en 'central_constructor' y
+# 'central_dominante' -- combinaba dos facetas anticorrelacionadas
+# (pase corto vs despeje/duelo), lo que comprimia la dispersion del score.
+# Ver docs/DECISIONS.md. Pesos por nivel (no se reabre): core 3,
+# support 1.5, context 0.5.
 #
 # (code, label, [buckets de posicion], {tier: [codigos stat_types]})
 TIER_WEIGHT = {"core": 3.0, "support": 1.5, "context": 0.5}
@@ -149,12 +152,21 @@ ROLES = [
         },
     ),
     (
-        "ball_playing_cb", "Ball Playing CB",
+        "central_constructor", "Central Constructor",
         ["central"],
         {
             "core":    ["accurate-passes-percentage", "long-balls", "long-balls-won"],
-            "support": ["aeriels-won", "clearances", "duels-won"],
-            "context": ["passes", "tackles", "interceptions", "blocked-shots"],
+            "support": ["passes"],
+            "context": ["interceptions"],
+        },
+    ),
+    (
+        "central_dominante", "Central Dominante",
+        ["central"],
+        {
+            "core":    ["duels-won", "aeriels-won", "clearances"],
+            "support": ["blocked-shots", "tackles"],
+            "context": ["interceptions"],
         },
     ),
 ]
@@ -204,7 +216,7 @@ ROLE_STYLE_WEIGHTS = [
         ("pass_accuracy", "positive"),
         ("directness", "negative"),
     ]),
-    ("ball_playing_cb", [
+    ("central_constructor", [
         ("possession", "positive"),
         ("pass_accuracy", "positive"),
     ]),
@@ -212,6 +224,9 @@ ROLE_STYLE_WEIGHTS = [
         ("crossing_frequency", "positive"),
     ]),
     ("ball_winner", [
+        ("press_intensity", "positive"),
+    ]),
+    ("central_dominante", [
         ("press_intensity", "positive"),
     ]),
 ]
