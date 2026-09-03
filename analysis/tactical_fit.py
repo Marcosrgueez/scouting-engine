@@ -48,36 +48,52 @@ DEFAULT_W_STYLE = 0.30
 
 # devuelve una fila por (jugador-rol, equipo, formacion, eje de estilo):
 # el ladrillo con el que se construyen score y desglose.
+# :player_season_ids / :team_season_ids son SIEMPRE listas de season_id.
+# Un solo elemento = comportamiento clásico (una competición-temporada).
+# Varios = modo cross-liga (Fase 14): el role_score de cada jugador sigue
+# saliendo de SU propio pool de percentiles; aquí solo se deja de filtrar
+# por una única competición al construir el ranking.
 _CONTRIB_SQL = """
 WITH rs AS (
     SELECT prs.player_id, pl.name AS player_name,
+           prs.season_id AS player_season_id,
+           pc.name AS player_competition, ps.name AS player_season,
            prs.role_id, r.code AS role_code, r.label AS role_label,
            prs.position_bucket, prs.score AS role_score
     FROM player_role_scores prs
-    JOIN roles r    ON r.id = prs.role_id
-    JOIN players pl ON pl.id = prs.player_id
+    JOIN roles r         ON r.id = prs.role_id
+    JOIN players pl      ON pl.id = prs.player_id
+    JOIN seasons ps      ON ps.id = prs.season_id
+    JOIN competitions pc ON pc.id = ps.competition_id
     WHERE (:player_id  IS NULL OR prs.player_id = :player_id)
       AND (:player_like IS NULL OR pl.name ILIKE :player_like)
       AND (:role_code   IS NULL OR r.code = :role_code)
-      AND (:season_id   IS NULL OR prs.season_id = :season_id)
+      AND prs.season_id = ANY(:player_season_ids)
 ),
 prof AS (
-    SELECT tsa.team_id, t.name AS team_name, tsa.formation,
-           tsa.style_axis, tsa.percentile, tsa.raw_value, tsa.n_matches
+    SELECT tsa.team_id, t.name AS team_name,
+           tsa.season_id AS team_season_id,
+           tc.name AS team_competition, ts.name AS team_season,
+           tsa.formation, tsa.style_axis, tsa.percentile, tsa.raw_value, tsa.n_matches
     FROM team_style_axes tsa
-    JOIN teams t ON t.id = tsa.team_id
+    JOIN teams t         ON t.id = tsa.team_id
+    JOIN seasons ts      ON ts.id = tsa.season_id
+    JOIN competitions tc ON tc.id = ts.competition_id
     WHERE (:team_id   IS NULL OR tsa.team_id = :team_id)
       AND (:team_like IS NULL OR t.name ILIKE :team_like)
-      AND (:season_id IS NULL OR tsa.season_id = :season_id)
+      AND tsa.season_id = ANY(:team_season_ids)
       AND (
             (:by_formation AND :formation IS NULL)
          OR (:formation IS NOT NULL AND tsa.formation = :formation)
          OR (NOT :by_formation AND :formation IS NULL AND tsa.formation IS NULL)
       )
 )
-SELECT rs.player_id, rs.player_name, rs.role_code, rs.role_label,
-       rs.position_bucket, rs.role_score,
-       prof.team_id, prof.team_name, prof.formation, prof.n_matches,
+SELECT rs.player_id, rs.player_name, rs.player_season_id,
+       rs.player_competition, rs.player_season,
+       rs.role_code, rs.role_label, rs.position_bucket, rs.role_score,
+       prof.team_id, prof.team_name, prof.team_season_id,
+       prof.team_competition, prof.team_season,
+       prof.formation, prof.n_matches,
        rsw.style_axis, rsw.weight, rsw.direction,
        prof.percentile AS team_percentile, prof.raw_value AS team_raw_value,
        (CASE WHEN rsw.direction = 'negative' THEN 100 - prof.percentile
@@ -95,14 +111,29 @@ def _norm_weights(w_role, w_style):
     return w_role / total, w_style / total
 
 
+def _resolve_season_ids(session, explicit, season_id):
+    if explicit is not None:
+        return list(explicit)
+    if season_id is not None:
+        return [season_id]
+    return [r[0] for r in session.execute(text("SELECT id FROM seasons"))]
+
+
 def tactical_fit(session, *, player_id=None, player_like=None, team_id=None,
                  team_like=None, role_code=None, formation=None, by_formation=False,
-                 w_role=DEFAULT_W_ROLE, w_style=DEFAULT_W_STYLE, season_id=None):
+                 w_role=DEFAULT_W_ROLE, w_style=DEFAULT_W_STYLE, season_id=None,
+                 player_season_ids=None, team_season_ids=None):
     """Devuelve (resultados, w_role_norm, w_style_norm).
 
+    `season_id` (clásico) aplica a jugador Y equipo. `player_season_ids` /
+    `team_season_ids` (Fase 14, listas) lo sobreescriben por separado: con
+    varias temporadas de jugador se obtiene un ranking cross-liga (el
+    role_score de cada jugador sigue viniendo de su propio pool).
+
     resultados: lista de dicts ordenada por score desc, cada uno con:
-      player_id, player_name, role_code, role_label, position_bucket,
-      team_id, team_name, formation, n_matches,
+      player_id, player_name, player_competition, player_season,
+      role_code, role_label, position_bucket,
+      team_id, team_name, team_competition, team_season, formation, n_matches,
       role_score, style_component, score,
       breakdown: [ {style_axis, direction, team_percentile, team_raw_value,
                     effective_percentile, weight, contribution}, ... ]
@@ -112,17 +143,20 @@ def tactical_fit(session, *, player_id=None, player_like=None, team_id=None,
         "player_id": player_id, "player_like": f"%{player_like}%" if player_like else None,
         "team_id": team_id, "team_like": f"%{team_like}%" if team_like else None,
         "role_code": role_code, "formation": formation,
-        "by_formation": by_formation, "season_id": season_id,
+        "by_formation": by_formation,
+        "player_season_ids": _resolve_season_ids(session, player_season_ids, season_id),
+        "team_season_ids": _resolve_season_ids(session, team_season_ids, season_id),
     }
     rows = session.execute(text(_CONTRIB_SQL), params).mappings().all()
 
     grouped = defaultdict(list)
     for r in rows:
-        key = (r["player_id"], r["role_code"], r["team_id"], r["formation"])
+        key = (r["player_id"], r["player_season_id"], r["role_code"],
+               r["team_id"], r["team_season_id"], r["formation"])
         grouped[key].append(r)
 
     out = []
-    for (pid, rcode, tid, form), items in grouped.items():
+    for (pid, _psid, rcode, tid, _tsid, form), items in grouped.items():
         first = items[0]
         wsum = sum(float(i["weight"]) for i in items)
         contribs = []
@@ -142,9 +176,13 @@ def tactical_fit(session, *, player_id=None, player_like=None, team_id=None,
         score = wr * role_score + ws * style_component
         out.append({
             "player_id": pid, "player_name": first["player_name"],
+            "player_competition": first["player_competition"],
+            "player_season": first["player_season"],
             "role_code": rcode, "role_label": first["role_label"],
             "position_bucket": first["position_bucket"],
             "team_id": tid, "team_name": first["team_name"],
+            "team_competition": first["team_competition"],
+            "team_season": first["team_season"],
             "formation": form, "n_matches": first["n_matches"],
             "role_score": round(role_score, 2),
             "style_component": round(style_component, 2),
@@ -166,13 +204,14 @@ def _print(results, wr, ws, explain=False, top=None):
         return
     print(f"\n  Tactical Fit  (w_role={wr}, w_style={ws})")
     shown = results[:top] if top else results
-    print(f"  {'jugador':<22} {'rol':<16} {'equipo':<20} {'form':>7} "
+    print(f"  {'jugador':<22} {'liga jug.':<14} {'equipo':<20} {'liga eq.':<14} {'form':>7} "
           f"{'role':>6} {'style':>6} {'FIT':>6}")
-    print("  " + "-" * 92)
+    print("  " + "-" * 108)
     for r in shown:
         form = r["formation"] or "(agg)"
-        print(f"  {r['player_name']:<22} {r['role_code']:<16} {r['team_name']:<20} "
-              f"{form:>7} {r['role_score']:>6} {r['style_component']:>6} {r['score']:>6}")
+        print(f"  {r['player_name']:<22} {r['player_competition']:<14} {r['team_name']:<20} "
+              f"{r['team_competition']:<14} {form:>7} {r['role_score']:>6} "
+              f"{r['style_component']:>6} {r['score']:>6}")
         if explain:
             for b in r["breakdown"]:
                 sign = "-" if b["direction"] == "negative" else "+"
@@ -195,6 +234,8 @@ def main():
     ap.add_argument("--w-role", type=float, default=DEFAULT_W_ROLE)
     ap.add_argument("--w-style", type=float, default=DEFAULT_W_STYLE)
     ap.add_argument("--top", type=int, default=20)
+    ap.add_argument("--season-id", type=int, default=None,
+                    help="acotar a una competicion-temporada (id interno). Sin esto, cruza todas.")
     ap.add_argument("--explain", action="store_true", help="imprime el desglose por eje")
     args = ap.parse_args()
 
@@ -204,7 +245,7 @@ def main():
             session,
             player_like=args.player, team_like=args.team, role_code=args.role,
             formation=args.formation, by_formation=args.by_formation,
-            w_role=args.w_role, w_style=args.w_style,
+            w_role=args.w_role, w_style=args.w_style, season_id=args.season_id,
         )
         _print(results, wr, ws, explain=args.explain, top=args.top)
     finally:

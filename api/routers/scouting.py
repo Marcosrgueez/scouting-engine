@@ -24,5 +24,6 @@ def tactical_fit(
     season: Season = Depends(resolve_season),
 ):
     return svc.tactical_fit_ranking(
-        db, season, team_id=body.team_id, role_id=body.role_id, formation=body.formation
+        db, season, team_id=body.team_id, role_id=body.role_id, formation=body.formation,
+        cross_competition=body.cross_competition,
     )

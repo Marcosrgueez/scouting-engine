@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, aliased
 
 from analysis.narrative import player_role_summary, team_style_narrative
 from analysis.tactical_fit import tactical_fit
+from api.dependencies import CROSS_COMPETITION_WARNING, sibling_season_ids
 from db.models import (
     Player,
     PlayerPercentile,
@@ -333,11 +334,11 @@ def get_player_roles(db: Session, season: Season, player_id: int) -> dict:
 # Fase 11 - Tactical Fit invertido (Fase 12a: scoped por temporada)
 # ---------------------------------------------------------------------------
 
-def _team_narratives(db: Session, season_id: int):
+def _team_narratives(db: Session, season_ids: list[int]):
     rows = db.execute(
         select(TeamStyleAxis.team_id, Team.name, TeamStyleAxis.style_axis, TeamStyleAxis.percentile)
         .join(Team, Team.id == TeamStyleAxis.team_id)
-        .where(TeamStyleAxis.formation.is_(None), TeamStyleAxis.season_id == season_id)
+        .where(TeamStyleAxis.formation.is_(None), TeamStyleAxis.season_id.in_(season_ids))
     ).all()
     by_team, names = {}, {}
     for r in rows:
@@ -348,7 +349,10 @@ def _team_narratives(db: Session, season_id: int):
     return {tid: team_style_narrative(axes, names[tid]) for tid, axes in by_team.items()}
 
 
-def get_best_teams(db: Session, season: Season, player_id: int, *, role_id: int | None = None) -> dict:
+def get_best_teams(
+    db: Session, season: Season, player_id: int, *,
+    role_id: int | None = None, cross_competition: bool = False,
+) -> dict:
     p: Player = _load_player_row(db, season, player_id)[0]
 
     scored = db.execute(
@@ -364,6 +368,7 @@ def get_best_teams(db: Session, season: Season, player_id: int, *, role_id: int 
             "season": season.name, "competition": season.competition.name,
             "role_id": None, "role_code": None,
             "role_label": None, "role_score": None, "available_roles": [],
+            "cross_competition": cross_competition, "warning": None,
             "note": f"Sin role score en {season.competition.name} {season.name}: posición fuera de "
             "los 4 roles, umbral de minutos no alcanzado, o no jugó esa temporada.",
             "count": 0, "ranking": [],
@@ -384,26 +389,41 @@ def get_best_teams(db: Session, season: Season, player_id: int, *, role_id: int 
     else:
         chosen = scored[0]
 
+    # el role_score del jugador sale de SU temporada; los equipos pueden ser
+    # de todas las competiciones del mismo año si cross_competition.
+    team_season_ids = sibling_season_ids(db, season) if cross_competition else [season.id]
     results, w_role, w_style = tactical_fit(
-        db, player_id=player_id, role_code=chosen.code, by_formation=False, season_id=season.id
+        db, player_id=player_id, role_code=chosen.code, by_formation=False,
+        player_season_ids=[season.id], team_season_ids=team_season_ids,
     )
-    narratives = _team_narratives(db, season.id)
+    narratives = _team_narratives(db, team_season_ids)
     ranking = [
         {
-            "team_id": r["team_id"], "team_name": r["team_name"], "n_matches": r["n_matches"],
+            "team_id": r["team_id"], "team_name": r["team_name"],
+            "competition": r["team_competition"], "n_matches": r["n_matches"],
             "role_score": r["role_score"], "style_component": r["style_component"], "score": r["score"],
             "team_narrative": narratives.get(r["team_id"], ""), "breakdown": r["breakdown"],
         }
         for r in results
     ]
+    note = (
+        f"Encaje del jugador ({season.competition.name} {season.name}) en cada equipo de "
+        f"{season.competition.name} ({season.name}) con su rol. role_score fijo; lo que cambia el "
+        "orden es el estilo del equipo."
+    )
+    if cross_competition:
+        note = (
+            f"Encaje del jugador ({season.competition.name} {season.name}) en equipos de las "
+            "5 competiciones. role_score fijo; lo que cambia el orden es el estilo del equipo."
+        )
     return {
         "player_id": p.id, "player_name": p.name,
         "season": season.name, "competition": season.competition.name,
         "role_id": chosen.role_id, "role_code": chosen.code,
         "role_label": chosen.label, "role_score": float(chosen.score), "available_roles": available,
         "w_role": w_role, "w_style": w_style,
-        "note": f"Encaje del jugador en cada equipo de {season.competition.name} ({season.name}) con "
-        "su rol. role_score fijo; lo que cambia el orden es el estilo del equipo. El ranking no "
-        "cruza competiciones (sin League Strength Coefficient todavía).",
+        "cross_competition": cross_competition,
+        "warning": CROSS_COMPETITION_WARNING if cross_competition else None,
+        "note": note,
         "count": len(ranking), "ranking": ranking,
     }

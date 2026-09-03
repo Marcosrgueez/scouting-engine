@@ -1587,3 +1587,89 @@ en `s25583/`, `s25533/`, `s25646/`.
 **Pendiente / futuro:** League Strength Coefficient — con 5 ligas es más
 útil que nunca, pero los rankings siguen sin cruzar competición a
 propósito.
+
+## 2026-09-03 — Fase 14: encaje táctico cross-liga + diagnóstico de Ball Playing CB
+
+Dos cosas: (1) diagnóstico de por qué Ball Playing CB tiene tan poca
+dispersión (auditoría previa), sin tocar pesos; (2) el buscador de encaje
+táctico puede incluir jugadores/equipos de las 5 competiciones.
+
+### 1. Diagnóstico BPCB (solo lectura, sin cambios)
+
+- Cada métrica de entrada del role_score es un **percentil**, y
+  `PERCENT_RANK` los hace **uniformes por construcción**: en el pool de 69
+  centrales de LaLiga 25/26, las 10 métricas de BPCB tienen TODAS media
+  50.0 y desv. 29.3, sin excepción. Da igual que el dato crudo esté
+  comprimido (todos los centrales pasan al 85-92 %): el percentil lo
+  reparte 0-100. **La compresión no está en la entrada.**
+- Está en la **combinación**. `role_score = Σ(pctl·w)/Σw` sobre 10 métricas
+  con correlación media entre pares de **+0.05** (casi independientes, con
+  pares fuertemente anticorrelacionados: `prec% / long-balls` −0.51,
+  `clearances / passes` −0.42). Promediar ~10 percentiles casi
+  independientes colapsa la desv. hacia la media:
+  - predicho si fueran independientes: `28.9·sqrt(Σw²/(Σw)²)` = `28.9·0.380` = **11.0**
+  - observado: **12.0**
+- Control Ball Winner (mismo pool, 7 métricas, factor 0.435): observado
+  **15.2**. Menos métricas + concentración de peso mayor + pares menos
+  contradictorios → retiene más dispersión.
+- Los 11 centrales de referencia lo confirman a ojo: cada uno es "picudo"
+  en un subconjunto distinto (Kike Salas prec% p6 pero aéreos p100 /
+  despejes p100; David Carmo long-balls p99 pero prec% p10). Ninguno es
+  élite en todo → la media ponderada tira de cada pico hacia el centro.
+- **Lectura:** es una propiedad estructural de la definición del rol (10
+  métricas, pesos repartidos, sub-señales contradictorias), no un problema
+  de dato ni un bug. Qué hacer con los pesos se decide aparte.
+
+### 2. Encaje táctico cross-liga
+
+- `analysis/tactical_fit.py`: `_CONTRIB_SQL` deja de filtrar por una única
+  `season_id`. Params nuevos `player_season_ids` / `team_season_ids`
+  (listas, `= ANY(...)`), independientes: se puede cruzar el pool de
+  jugadores manteniendo el equipo fijo (buscador) o al revés (fit
+  invertido). El `role_score` de cada jugador sigue saliendo de SU pool —
+  el cálculo NO cambia, solo se deja de acotar a una competición. Cada
+  fila lleva ahora `player_competition` / `team_competition`.
+- `api/dependencies.py`: `sibling_season_ids(db, season)` = todos los
+  season_id con el mismo `name` ("2025/2026") → el conjunto que mezcla el
+  modo cross. `CROSS_COMPETITION_WARNING` (constante compartida).
+- `api/services/scouting.py::tactical_fit_ranking(..., cross_competition=False)`:
+  jugadores de las 5 ligas, equipo fijo. `players.py::get_best_teams(...,
+  cross_competition=False)`: jugador fijo, equipos de las 5 ligas.
+  `_team_narratives` pasa a aceptar lista de seasons.
+- Respuestas: `+cross_competition`, `+warning`, `+competition` por fila.
+  Routers: `cross_competition` en el body de tactical-fit y como query en
+  best-teams.
+- **Default: OFF.** El caso primario es scouting dentro de una liga; sin
+  LSC un p90 de Segunda junto a un p90 de Premier es engañoso, y meterlo
+  por defecto sorprendería. Consistente con "se opta por la vista con
+  caveats, no se recibe por sorpresa" (ceros imputados, press_intensity).
+  Además no cambia el comportamiento actual ni los tests.
+- Caso borde: un jugador con role score en 2 ligas del mismo año (traspaso
+  a mitad de temporada, ≥900 min en ambas) aparece 2 veces en el ranking
+  cross — **3 pares (jugador, rol) en todo el dataset** (p. ej. Unai Núñez,
+  Celta → Serie A: BPCB 38.9 en el pool de LaLiga, 56.7 en el de Serie A).
+  Se muestran los dos: es la lectura correcta (pools distintos) y refuerza
+  el aviso. Key de React = `player_id-competition`.
+- Frontend: checkbox `.cross-toggle` bajo los filtros en `TacticalFit.jsx`
+  y en la sección "Mejores equipos" de `PlayerProfile.jsx`; columna "liga"
+  en las dos tablas; `.caveat` (regla lateral `--weak`, como los ejes "en
+  contra") con el aviso cuando el modo está activo.
+
+### Validación
+
+- API: tactical-fit Barça + Ball Playing CB → sin cross 69 jugadores (solo
+  LaLiga, top Lejeune 80.4); con cross **339** de las 5 ligas (top Van Dijk
+  85.6 Premier; top-50 repartido 12/11/10/9/8). best-teams Arribas (Segunda)
+  → sin cross 22 equipos de Segunda; con cross **100** de las 5 ligas.
+  `style_component` idéntico (el estilo del equipo no cambia), solo varía
+  el `role_score`.
+- Frontend: `npm test` **8/8** (nuevo: "encaje táctico cross-liga: el
+  toggle mezcla las 5 competiciones + muestra el aviso"), build + lint
+  limpios.
+
+### Código
+
+`analysis/tactical_fit.py`, `api/dependencies.py` (sibling_season_ids +
+constante), `api/services/{scouting,players}.py`, `api/schemas/{scouting,players}.py`,
+`api/routers/{scouting,players}.py`, `frontend/src/pages/{TacticalFit,PlayerProfile}.jsx`,
+`frontend/src/styles.css`, `frontend/src/smoke.test.jsx`, README.

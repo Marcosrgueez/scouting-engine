@@ -91,5 +91,10 @@ def get_best_teams(
     db: Session = Depends(get_db),
     season: Season = Depends(resolve_season),
     role_id: int | None = Query(None, description="forzar un rol; si se omite, el de mayor score"),
+    cross_competition: bool = Query(
+        False,
+        description="si true, rankea equipos de las 5 competiciones (mismo año), no solo la del "
+        "jugador. Sin ajuste de nivel de liga. Por defecto false.",
+    ),
 ):
-    return svc.get_best_teams(db, season, player_id, role_id=role_id)
+    return svc.get_best_teams(db, season, player_id, role_id=role_id, cross_competition=cross_competition)

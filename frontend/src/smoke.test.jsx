@@ -77,6 +77,28 @@ test('encaje táctico 24/25 preservado: Ball Winner en Dep. Alavés = Camavinga 
   )
 })
 
+test('encaje táctico cross-liga: el toggle mezcla las 5 competiciones + muestra el aviso', async () => {
+  setSeason(3) // LaLiga 25/26
+  const user = (await import('@testing-library/user-event')).default.setup()
+  mount('/fit', <Route path="/fit" element={<TacticalFit />} />)
+  await waitFor(() => expect(screen.getByText('FC Barcelona')).toBeDefined(), { timeout: 5000 })
+  const selects = screen.getAllByRole('combobox')
+  const barcaOpt = within(selects[0]).getByRole('option', { name: 'FC Barcelona' })
+  await user.selectOptions(selects[0], barcaOpt.value)
+  const bpcbOpt = within(selects[1]).getByRole('option', { name: 'Ball Playing CB' })
+  await user.selectOptions(selects[1], bpcbOpt.value)
+  await user.click(screen.getByRole('checkbox', { name: /todas las competiciones/ }))
+  await user.click(screen.getByRole('button', { name: 'Buscar' }))
+  await waitFor(() => expect(screen.getByText(/sin ajuste de nivel de liga/)).toBeDefined(), {
+    timeout: 5000,
+  })
+  // el ranking debe incluir al menos un jugador de fuera de LaLiga
+  const ligaCells = screen.getAllByRole('cell').map((c) => c.textContent)
+  expect(ligaCells.some((t) => ['Premier League', 'Serie A', 'Bundesliga', 'La Liga 2'].includes(t))).toBe(
+    true,
+  )
+})
+
 test('cambio de temporada: mismo jugador, score distinto (Camavinga BW 90.1 vs 79.0)', async () => {
   setSeason(1) // LaLiga 24/25
   const { unmount } = mount('/players/396', <Route path="/players/:id" element={<PlayerProfile />} />)

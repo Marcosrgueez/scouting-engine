@@ -151,6 +151,7 @@ class BestTeamAxisItem(BaseModel):
 class BestTeamItem(BaseModel):
     team_id: int
     team_name: str
+    competition: str = Field(description="competición del equipo (relevante en modo cross-liga)")
     n_matches: int | None = None
     role_score: float
     style_component: float
@@ -171,6 +172,8 @@ class BestTeamsResponse(BaseModel):
     player_name: str
     season: str
     competition: str
+    cross_competition: bool = False
+    warning: str | None = Field(None, description="aviso visible cuando cross_competition está activo")
     role_id: int | None = None
     role_code: str | None = None
     role_label: str | None = None

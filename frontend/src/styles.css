@@ -331,6 +331,30 @@ th, td { font-variant-numeric: tabular-nums; }
 }
 .player-summary.muted { border-left-color: var(--border); color: var(--text-dim); }
 
+/* aviso de límite de dato (Fase 14: comparación cross-liga sin ajuste de nivel).
+   regla lateral cálida = "con cuidado", el mismo color que los ejes "en contra". */
+.caveat {
+  margin: 14px 0 18px;
+  padding-left: 12px;
+  border-left: 2px solid var(--weak);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  max-width: 760px;
+}
+
+/* toggle "incluir todas las competiciones" — fila plana bajo los filtros */
+.cross-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.cross-toggle input { accent-color: var(--signal); cursor: pointer; }
+
 .two-col {
   display: grid;
   grid-template-columns: 1.32fr 1px 1fr;

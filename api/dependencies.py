@@ -23,6 +23,14 @@ from sqlalchemy.orm import Session
 from db.database import SessionLocal
 from db.models import Competition, Season
 
+# Fase 14 — aviso del modo cross-liga del buscador de encaje táctico. Mismo
+# tratamiento que las otras advertencias de límite de dato del proyecto
+# (ceros imputados, "actividad defensiva" ≠ presión).
+CROSS_COMPETITION_WARNING = (
+    "Comparación entre competiciones basada en percentiles dentro de cada una, sin "
+    "ajuste de nivel de liga — interpreta con cautela."
+)
+
 
 def get_db() -> Iterator[Session]:
     db = SessionLocal()
@@ -55,6 +63,13 @@ def _all_seasons(db: Session) -> list[Season]:
 def default_season(db: Session) -> Season | None:
     seasons = _all_seasons(db)
     return seasons[0] if seasons else None
+
+
+def sibling_season_ids(db: Session, season: Season) -> list[int]:
+    """Los season_id de TODAS las competiciones para el mismo año que
+    `season` (mismo `name`) — el conjunto que mezcla el modo cross-liga
+    del buscador de encaje táctico (Fase 14)."""
+    return list(db.scalars(select(Season.id).where(Season.name == season.name)))
 
 
 # alias histórico (routers/seasons.py)

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from analysis.narrative import team_style_narrative
 from analysis.tactical_fit import DEFAULT_W_ROLE, DEFAULT_W_STYLE, tactical_fit
+from api.dependencies import CROSS_COMPETITION_WARNING, sibling_season_ids
 from db.models import Role, Season, Team, TeamStyleAxis
 
 
@@ -31,7 +32,8 @@ def _available_formations(db: Session, team_id: int, season_id: int) -> list[str
 
 
 def tactical_fit_ranking(
-    db: Session, season: Season, *, team_id: int, role_id: int, formation: str | None
+    db: Session, season: Season, *, team_id: int, role_id: int, formation: str | None,
+    cross_competition: bool = False,
 ) -> dict:
     team = db.get(Team, team_id)
     if team is None:
@@ -78,6 +80,9 @@ def tactical_fit_ranking(
                 ),
             )
 
+    # el equipo consultado es siempre de `season`; los jugadores pueden venir
+    # de todas las competiciones del mismo año si cross_competition.
+    player_season_ids = sibling_season_ids(db, season) if cross_competition else [season.id]
     results, w_role, w_style = tactical_fit(
         db,
         team_id=team_id,
@@ -86,7 +91,8 @@ def tactical_fit_ranking(
         by_formation=False,
         w_role=DEFAULT_W_ROLE,
         w_style=DEFAULT_W_STYLE,
-        season_id=season.id,
+        player_season_ids=player_season_ids,
+        team_season_ids=[season.id],
     )
 
     style_axes = db.execute(
@@ -108,6 +114,7 @@ def tactical_fit_ranking(
         {
             "player_id": r["player_id"],
             "player_name": r["player_name"],
+            "competition": r["player_competition"],
             "position_bucket": r["position_bucket"],
             "role_score": r["role_score"],
             "style_component": r["style_component"],
@@ -130,6 +137,8 @@ def tactical_fit_ranking(
         "team_narrative": team_narrative,
         "w_role": w_role,
         "w_style": w_style,
+        "cross_competition": cross_competition,
+        "warning": CROSS_COMPETITION_WARNING if cross_competition else None,
         "count": len(ranking),
         "ranking": ranking,
     }

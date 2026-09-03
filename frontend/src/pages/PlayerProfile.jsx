@@ -50,6 +50,7 @@ function BestTeamRow({ r, rank }) {
       <tr className="clickable" onClick={() => setOpen(!open)}>
         <td className="r num dim">{rank}</td>
         <td className="name">{r.team_name}</td>
+        <td className="dim" style={{ fontSize: 11 }}>{r.competition}</td>
         <td className="r num dim">{r.role_score.toFixed(0)}</td>
         <td className="r num dim">{r.style_component.toFixed(0)}</td>
         <td className="r num" style={{ color: 'var(--signal)', fontWeight: 500 }}>
@@ -59,7 +60,7 @@ function BestTeamRow({ r, rank }) {
       </tr>
       {open && (
         <tr className="fit-expand">
-          <td colSpan={6}>
+          <td colSpan={7}>
             <div className="inner expand-enter">
               <p className="t-meta" style={{ marginBottom: 8 }}>{r.team_narrative}</p>
               {r.breakdown.map((b) => (
@@ -90,7 +91,15 @@ export default function PlayerProfile() {
   const [simFilter, setSimFilter] = useState({ side: '', age_max: '' })
   const sim = useApi(() => api.playerSimilar(id, simFilter), [id, simFilter.side, simFilter.age_max])
   const [roleId, setRoleId] = useState('')
-  const best = useApi(() => api.playerBestTeams(id, roleId ? { role_id: roleId } : {}), [id, roleId])
+  const [crossComp, setCrossComp] = useState(false)
+  const best = useApi(
+    () =>
+      api.playerBestTeams(id, {
+        ...(roleId ? { role_id: roleId } : {}),
+        ...(crossComp ? { cross_competition: true } : {}),
+      }),
+    [id, roleId, crossComp],
+  )
 
   if (p.loading) return <Loading what="el jugador" />
   if (p.error) return <ErrorState error={p.error} />
@@ -180,12 +189,22 @@ export default function PlayerProfile() {
                 </span>
               </div>
             </div>
+            <label className="cross-toggle">
+              <input
+                type="checkbox"
+                checked={crossComp}
+                onChange={(e) => setCrossComp(e.target.checked)}
+              />
+              incluir equipos de todas las competiciones
+            </label>
+            {best.data.warning && <p className="caveat">{best.data.warning}</p>}
             <div className={`swap ${best.loading ? 'loading' : ''}`}>
               <table className="table">
                 <thead>
                   <tr>
                     <th className="r">#</th>
                     <th>equipo</th>
+                    <th>liga</th>
                     <th className="r">role</th>
                     <th className="r">style</th>
                     <th className="r">fit</th>
@@ -194,7 +213,7 @@ export default function PlayerProfile() {
                 </thead>
                 <tbody>
                   {best.data.ranking.map((r, i) => (
-                    <BestTeamRow key={r.team_id} r={r} rank={i + 1} />
+                    <BestTeamRow key={`${r.team_id}-${r.competition}`} r={r} rank={i + 1} />
                   ))}
                 </tbody>
               </table>

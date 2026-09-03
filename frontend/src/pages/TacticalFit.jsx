@@ -11,6 +11,7 @@ function Row({ r, rank }) {
       <tr className="clickable" onClick={() => setOpen(!open)}>
         <td className="r num dim">{rank}</td>
         <td className="name">{r.player_name}</td>
+        <td className="dim" style={{ fontSize: 11 }}>{r.competition}</td>
         <td className="r num dim">{r.role_score.toFixed(0)}</td>
         <td className="r num dim">{r.style_component.toFixed(0)}</td>
         <td className="r num" style={{ color: 'var(--signal)', fontWeight: 500 }}>
@@ -22,7 +23,7 @@ function Row({ r, rank }) {
       </tr>
       {open && (
         <tr className="fit-expand">
-          <td colSpan={6}>
+          <td colSpan={7}>
             <div className="inner expand-enter">
               <div className="t-meta" style={{ marginBottom: 6 }}>
                 fit = 0.7 × role ({r.role_score}) + 0.3 × style ({r.style_component})
@@ -57,6 +58,7 @@ export default function TacticalFit() {
   const [teamId, setTeamId] = useState('')
   const [roleId, setRoleId] = useState('')
   const [formation, setFormation] = useState('')
+  const [crossComp, setCrossComp] = useState(false)
 
   // formaciones disponibles del equipo elegido, para el desplegable
   const style = useApi(() => api.teamStyle(teamId), [teamId], { skip: !teamId })
@@ -70,6 +72,7 @@ export default function TacticalFit() {
       team_id: Number(teamId),
       role_id: Number(roleId),
       formation: formation || undefined,
+      cross_competition: crossComp,
     })
   }
 
@@ -126,6 +129,15 @@ export default function TacticalFit() {
         </button>
       </div>
 
+      <label className="cross-toggle">
+        <input
+          type="checkbox"
+          checked={crossComp}
+          onChange={(e) => setCrossComp(e.target.checked)}
+        />
+        incluir jugadores de todas las competiciones
+      </label>
+
       {fit.error && <ErrorState error={fit.error} />}
 
       {d && (
@@ -158,11 +170,14 @@ export default function TacticalFit() {
 
           {d.team_narrative && <p className="player-summary">{d.team_narrative}</p>}
 
+          {d.warning && <p className="caveat">{d.warning}</p>}
+
           <table className="table">
             <thead>
               <tr>
                 <th className="r">#</th>
                 <th>jugador</th>
+                <th>liga</th>
                 <th className="r">role</th>
                 <th className="r">style</th>
                 <th className="r">fit</th>
@@ -171,7 +186,7 @@ export default function TacticalFit() {
             </thead>
             <tbody>
               {d.ranking.map((r, i) => (
-                <Row key={r.player_id} r={r} rank={i + 1} />
+                <Row key={`${r.player_id}-${r.competition}`} r={r} rank={i + 1} />
               ))}
             </tbody>
           </table>

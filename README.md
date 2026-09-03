@@ -156,7 +156,7 @@ esconder:
 |---|---|---|
 | **Sin xG / xA** | La calidad de finalización y de creación se aproxima con *grandes ocasiones creadas / falladas*, no se mide. | Sportmonks no lo da a nivel agregado de temporada. |
 | **Sin datos de evento / presión por zona** | *Pressing Forward* no es construible. `press_intensity` mide "actividad defensiva" (tackles + intercepciones), que correlaciona con **menos** posesión — no es presión real (PPDA). | Requiere datos de tracking o de evento. |
-| **Sin League Strength Coefficient** | Las 5 competiciones **nunca aparecen mezcladas en un mismo ranking**, a propósito: un percentil de Segunda (o de la Bundesliga) no es comparable a uno de LaLiga y no hay factor de ajuste. Cada competición-temporada es su propio *pool*. | Construir el coeficiente es trabajo futuro consciente. |
+| **Sin League Strength Coefficient** | Por defecto los rankings **no mezclan competiciones**: un percentil de Segunda (o de la Bundesliga) no es comparable a uno de LaLiga y no hay factor de ajuste. El buscador de encaje táctico tiene un **toggle cross-liga** que sí las mezcla (cada fit con el pool del jugador), con un aviso visible de que no hay ajuste de nivel. | Construir el coeficiente es trabajo futuro consciente. |
 | **Sin pie dominante ni valor de mercado** | Ningún filtro puede apoyarse en ellos. | `preferred_foot` viene NULL en todo el roster; el valor de mercado no está en ninguna fuente. |
 | **Volumen defensivo sesgado por posesión** | Los centrales de equipos dominadores (Rüdiger) salen bajos en métricas defensivas per-90 porque su equipo tiene el balón. | Un ajuste por posesión es mejora futura. |
 | **Sin entrenador por temporada** | La narrativa de equipo usa solo el nombre del club. | Las fechas de tenencia de Sportmonks son incoherentes en los límites (varios entrenadores con `end` *antes* de empezar la temporada) — [`docs/fase11_coach_investigation.md`](docs/fase11_coach_investigation.md). Descartado para temporadas pasadas; reconsiderable para la temporada en curso. |
@@ -317,10 +317,10 @@ se repite entre ligas.
 | `GET` | `/players/{id}` | Bio + foto + percentiles + `summary` narrativo (por reglas). |
 | `GET` | `/players/{id}/similar` | Top-20 similar, con filtros de edad/lado sobre el resultado. |
 | `GET` | `/players/{id}/roles` | Role scores + desglose completo por métrica. |
-| `GET` | `/players/{id}/best-teams` | Tactical Fit invertido: mejores equipos para el jugador. |
+| `GET` | `/players/{id}/best-teams` | Tactical Fit invertido: mejores equipos para el jugador. `?cross_competition=true` rankea equipos de las 5 ligas (con aviso). |
 | `GET` | `/teams` · `/teams/{id}/style` | Equipos y perfil de estilo por formación + narrativa. |
 | `GET` | `/roles` | Los 4 roles con su matriz de pesos y de estilo. |
-| `POST` | `/scouting/tactical-fit` | Ranking de jugadores por encaje en un equipo + rol. |
+| `POST` | `/scouting/tactical-fit` | Ranking de jugadores por encaje en un equipo + rol. Body `cross_competition:true` incluye jugadores de las 5 ligas (con aviso). |
 
 Un jugador por debajo del umbral de minutos devuelve **200 con listas
 vacías** (existe, pero sin percentiles fiables), nunca 404. Los errores
