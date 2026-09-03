@@ -1455,3 +1455,135 @@ api.js, App.jsx (optgroup), pages/TeamProfile.jsx, smoke.test.jsx.
 **Pendiente / futuro:** League Strength Coefficient para poder comparar un
 jugador de Segunda contra el estilo/nivel de un equipo de Primera en el
 mismo ranking (hoy los rankings no cruzan competición a propósito).
+
+## 2026-09-03 — Fase 13: cargar Premier League, Serie A y Bundesliga 2025/26
+
+Las 3 ligas nuevas del plan de Sportmonks (Premier, Serie A, Bundesliga),
+en 3 ventanas horarias — una liga por ventana, replicando el patrón de
+Segunda (la alternativa de 2 ventanas dejaba el bucket `Player` demasiado
+justo). **Sin cambio de esquema** — multi-competición se cerró en la Fase
+12b. Precedida por `docs/fase13_leagues_investigation.md` (calidad de dato
+idéntica a LaLiga en las tres, `through-balls` presente, 4 roles
+construibles plenos, sin colisiones de `sportmonks_team_id`).
+
+### Setup (commit de Premier, compartido por las 3)
+
+- `scripts/10_fetch_season.py`: `LEAGUE_TIER = {8,82,384,564: 1; 567: 2}` +
+  `LEAGUE_COUNTRY` (England/Germany/Italy/Spain). `context.json` lleva
+  `country`.
+- `loaders/schemas.py`: `Context.country`.
+- `loaders/etl_laliga.py`: la competición usa `context.country` (antes
+  hardcodeaba `"Spain"` → habría puesto "Premier League / Spain").
+  `COUNTRY_BY_ID` + Inglaterra (462) / Italia (251) / Alemania (11).
+- `api/dependencies.py`: **fix necesario.** `_all_seasons` desempataba por
+  `Season.id.desc()`; LaLiga/Premier/Serie A 25/26 cierran la misma semana
+  (mismo `end_date`) → el `default` habría saltado a la última liga
+  cargada. Añadido `Competition.id.asc()` antes del id → LaLiga (comp 1)
+  sigue siendo el default.
+
+### Carga por liga
+
+| liga | season_id interno | sportmonks | equipos | jugadores | pts | team_fixtures | percentiles | role_scores |
+|---|---|---|---|---|---|---|---|---|
+| Premier League | 9 | 25583 | 20 | 718 | 734 | 760 | 11632 | 548 |
+| Serie A | 11 | 25533 | 20 | 773/774 | 804 | 760 | 11530 | 561 |
+| Bundesliga | 13 | 25646 | 18 | 615 | 624 | 612 | 9688 | 460 |
+
+- **0 role_scores descartados por cobertura** en las tres (el conjunto
+  completo de stats de LaLiga está presente).
+- **Serie A: 1 jugador rechazado** — Luca Mazzitelli (Cagliari, id 130046):
+  Sportmonks devuelve "No result(s) found" para su `/players/{id}` con el
+  filtro de la temporada. El ETL lo registra y lo salta (`log + skip`).
+  Caso único; sin datos no tendría percentiles de todos modos.
+- **Bundesliga: 2 jugadores ≥900 min sin posición mapeada** (excluidos de
+  percentiles) — la investigación ya vio `detailed_position_id` 25/26/27
+  (coarse, fallback → "desconocido") en la Bundesliga. Mismo mecanismo que
+  LaLiga; 2 de 283.
+
+### Dedup
+
+- `sportmonks_team_id` duplicados: **0** en las tres cargas. teams 42 → 62
+  → 82 → 100 (+20, +20, +18).
+- Jugadores: 2457 → 3193 → 3777. En Serie A y Bundesliga, ~30-37 jugadores
+  ya existían de otra liga → **traspasos entre ligas a mitad de temporada**
+  (mismo `sportmonks_player_id`, filas `player_team_season` separadas por
+  temporada). Dedup cross-liga funcionando, análogo al cross-temporada de
+  equipos.
+- `country` de equipos correcto: England / Italy / Germany. Nombres con
+  umlaut (München, Mönchengladbach, Köln) intactos en UTF-8.
+
+### Aislamiento
+
+Tras cada carga, las temporadas ya existentes **byte a byte iguales**
+(pctl / roles / sim / fx / tsa). Al cierre de la Fase 13:
+
+| season | pctl | roles | sim | fx | tsa |
+|---|---|---|---|---|---|
+| LaLiga 24/25 | 11496 | 524 | 6720 | 760 | 325 |
+| LaLiga 25/26 | 11765 | 533 | 6880 | 760 | 325 |
+| Segunda 25/26 | 12979 | 570 | 7580 | 936 | 340 |
+| Premier 25/26 | 11632 | 548 | 6800 | 760 | 285 |
+| Serie A 25/26 | 11530 | 561 | 6740 | 760 | 265 |
+| Bundesliga 25/26 | 9688 | 460 | 5660 | 612 | 255 |
+
+Sentinels intactos en todo momento: Camavinga BW 24/25 **90.12**, Pedri
+DLP 25/26 **95.49**, Rodri DLP Premier **89.12**, Barella AP Serie A
+**93.06**.
+
+### Role scores a ojo
+
+- **Premier:** Rodri DLP 89.1, Van Dijk Ball Playing CB 80.5 (top),
+  Declan Rice DLP 83.6, Bruno Fernandes AP 84.7, Palhinha BW 86.2.
+- **Serie A:** Barella AP 93.1, Locatelli DLP 88.5 / BW 83.9, Gagliardini
+  BW 90.5, Bastoni Ball Playing CB 63.7.
+- **Bundesliga:** Kimmich DLP **96.4** (top), Olise AP **97.1** (top),
+  Stiller DLP 87.3, Nico Schlotterbeck Ball Playing CB 70.7, Andrich
+  AP 2.0 (pivote puro, correcto — el guard no salta, `w`/`m` completos).
+
+### Nombres de temporada — 5 competiciones "2025/2026"
+
+`uq_season_competition_name (competition_id, name)` no colisiona (5
+`competition_id` distintos). `resolve_season`:
+- `?season=2025/2026` → **409**: *"existe en varias competiciones:
+  ['La Liga', 'La Liga 2', 'Premier League', 'Serie A', 'Bundesliga'].
+  Añade ?competition= o usa el sportmonks_season_id."*
+- `?season=<sportmonks_season_id>` e `?season=2025/2026&competition=<X>`
+  resuelven sin ambigüedad. El frontend usa el `id` interno.
+- `/seasons` default = **3** (La Liga 25/26) — el fix de orden aguanta con
+  4 temporadas tier-1 empatadas en `end_date`.
+
+### Frontend
+
+Sin cambio de código (el selector ya agrupa por `<optgroup>` de
+competición). Con 5 competiciones son 5 grupos, opciones "La Liga ·
+2025/2026" / "Premier League · 2025/2026" / … `npm test` **7/7** contra la
+API de 5 competiciones (`VITE_API_BASE`). `npm run build` + `npm run lint`
+limpios.
+
+### Coste real
+
+| liga | descarga | peticiones `Player` | ventana |
+|---|---|---|---|
+| Premier | 00:01 → 00:12 (~11 min) | ~718 (bucket 1868 → 1149) | 1 |
+| Serie A | 00:51 → 01:03 (~12 min) | ~774 (bucket 2000 → 1300) | 2 (tras reset) |
+| Bundesliga | 10:32 → 10:42 (~10 min) | ~615 (bucket 2000 → 1399) | 3 |
+
+Las 3 en ventanas separadas; ninguna bajó de ~1150 en el bucket `Player`.
+El troceado era necesario: ~2.100 peticiones `Player` en total > 2.000/hora.
+
+### Commits
+
+`5cddcdd` (Premier, con el setup) · `3aa40da` (Serie A, checkpoint vacío) ·
+[Bundesliga] (docs: investigación copiada al repo + esta entrada + README).
+
+### Código
+
+`api/dependencies.py` (fix de orden), `loaders/schemas.py` (+country),
+`loaders/etl_laliga.py` (country), `docs/` (fase13_leagues_investigation.md
++ índice + README). `data-experiment/scripts/10_fetch_season.py`
+(LEAGUE_TIER/COUNTRY) + `scripts/12_investigate_leagues.py` (nuevo) + crudo
+en `s25583/`, `s25533/`, `s25646/`.
+
+**Pendiente / futuro:** League Strength Coefficient — con 5 ligas es más
+útil que nunca, pero los rankings siguen sin cruzar competición a
+propósito.
