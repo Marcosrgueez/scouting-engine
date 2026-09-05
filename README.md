@@ -159,11 +159,11 @@ esconder:
 | Límite | Consecuencia | Por qué |
 |---|---|---|
 | **Sin xG / xA** | La calidad de finalización y de creación se aproxima con *grandes ocasiones creadas / falladas*, no se mide. | Sportmonks no lo da a nivel agregado de temporada. |
-| **Sin datos de evento / presión por zona** | *Pressing Forward* no es construible. `press_intensity` mide "actividad defensiva" (tackles + intercepciones), que correlaciona con **menos** posesión — no es presión real (PPDA). | Requiere datos de tracking o de evento. |
+| **Sin datos de evento / presión por zona** | *Pressing Forward* no es construible. `press_intensity` mide "actividad defensiva" (tackles + intercepciones), que correlaciona con **menos** posesión — no es presión real (PPDA). Por eso la narrativa **omite** ese eje cuando la posesión del equipo ya es extrema (≥p85): ahí el eje es un eco de la posesión, no señal de estilo (Liverpool/Bayern/City ya no salen descritos como "pasivos en defensa"). El dato crudo y su uso en Tactical Fit no cambian — el límite sigue siendo real, solo se dejó de convertir en una frase engañosa. | Requiere datos de tracking o de evento para una presión real. |
 | **Sin League Strength Coefficient** | Por defecto los rankings **no mezclan competiciones**: un percentil de Segunda (o de la Bundesliga) no es comparable a uno de LaLiga y no hay factor de ajuste. El buscador de encaje táctico tiene un **toggle cross-liga** que sí las mezcla (cada fit con el pool del jugador), con un aviso visible de que no hay ajuste de nivel. | Construir el coeficiente es trabajo futuro consciente. |
 | **Sin pie dominante ni valor de mercado** | Ningún filtro puede apoyarse en ellos. | `preferred_foot` viene NULL en todo el roster; el valor de mercado no está en ninguna fuente. |
 | **Volumen defensivo sesgado por posesión** | Los centrales de equipos dominadores (Rüdiger) salen bajos en métricas defensivas per-90 porque su equipo tiene el balón. | Un ajuste por posesión es mejora futura. |
-| **Sin entrenador por temporada** | La narrativa de equipo usa solo el nombre del club. | Las fechas de tenencia de Sportmonks son incoherentes en los límites (varios entrenadores con `end` *antes* de empezar la temporada) — [`docs/fase11_coach_investigation.md`](docs/fase11_coach_investigation.md). Descartado para temporadas pasadas; reconsiderable para la temporada en curso. |
+| **Entrenador: dos vistas, ninguna "la de las estadísticas" con certeza absoluta** | `team_coaches` guarda el **actual** (`active:true`, hoy) y el **de la temporada mostrada** (reconstruido por solape de fechas). Un puñado de equipos con cambios de entrenador mal cerrados en Sportmonks (contrato con `end` futuro que no se corrigió al cesar) pueden perder al primer entrenador de una cadena — ver Tottenham en `docs/DECISIONS.md`. Sin relación fiable ⇒ no se fuerza nada (ninguna fila `season`). | Fase 11 lo descartó por fechas incoherentes; la Fase 16 verificó que ya no lo están para la mayoría de casos. |
 
 ---
 
@@ -188,6 +188,7 @@ python -m db.create_schema      # crea tablas + catálogos estáticos
 #    en ../data-experiment/, ver nota abajo)
 python -m loaders.etl_laliga              # roster + estadísticas de temporada
 python -m loaders.etl_team_fixtures --offline   # partidos (si hay JSON cacheado)
+python -m loaders.etl_coaches              # entrenador actual + de temporada (Fase 16)
 
 # 3. Capa analítica (idempotente, se puede relanzar)
 python -m analysis.percentiles           # per-90 + percentiles por posición
@@ -322,7 +323,7 @@ se repite entre ligas.
 | `GET` | `/players/{id}/similar` | Top-20 similar, con filtros de edad/lado sobre el resultado. |
 | `GET` | `/players/{id}/roles` | Role scores + desglose completo por métrica. |
 | `GET` | `/players/{id}/best-teams` | Tactical Fit invertido: mejores equipos para el jugador. `?cross_competition=true` rankea equipos de las 5 ligas (con aviso). |
-| `GET` | `/teams` · `/teams/{id}/style` | Equipos y perfil de estilo por formación + narrativa. |
+| `GET` | `/teams` · `/teams/{id}/style` | Equipos y perfil de estilo por formación + narrativa + entrenador (actual y de la temporada, Fase 16). |
 | `GET` | `/roles` | Los 5 roles con su matriz de pesos y de estilo. |
 | `POST` | `/scouting/tactical-fit` | Ranking de jugadores por encaje en un equipo + rol. Body `cross_competition:true` incluye jugadores de las 5 ligas (con aviso). |
 
@@ -340,7 +341,11 @@ Frases por **plantilla fija, deterministas y auditables — sin LLM**.
 `player_role_summary` ("*se perfila como Ball Winner (score 90.1): destaca
 en entradas (percentil 100)…*") y `team_style_narrative` (los 1-2 ejes más
 alejados del percentil 50, umbrales ≥70 / ≤30; admite explícitamente el
-caso "sin rasgo marcado").
+caso "sin rasgo marcado"). El eje `press_intensity` se omite de la frase
+cuando la posesión ya es extrema (≥p85) — es un eco de la posesión ahí,
+no señal de estilo (Fase 16, ver Limitaciones).
+Misma función en las 3 vistas que muestran estilo de equipo (perfil,
+Tactical Fit, fit invertido) — no se duplica la plantilla.
 
 </details>
 
@@ -353,7 +358,9 @@ caso "sin rasgo marcado").
 temporada), `positions`, `stat_types`, `roles` + `role_buckets` +
 `role_weights`, `team_stat_types`, `role_style_weights`.
 **Entidades:** `players`, `player_team_season` (multi-etapa),
-`player_statistics`, `team_fixtures`, `team_fixture_statistics`.
+`player_statistics`, `team_fixtures`, `team_fixture_statistics`,
+`team_coaches` (multi-etapa, `kind` `current`/`season` — Fase 16, dato
+ingerido, no derivado).
 **Derivadas** (idempotentes, DELETE scoped + INSERT): `player_percentiles`,
 `player_role_scores` + `player_role_score_breakdown`, `player_similarity`,
 `team_style_axes`.
@@ -362,18 +369,18 @@ temporada), `positions`, `stat_types`, `roles` + `role_buckets` +
 
 ## Estado y roadmap
 
-**Construido (Fases 0-12):** validación de dato → esquema → ETL →
+**Construido (Fases 0-16):** validación de dato → esquema → ETL →
 percentiles → taxonomía de roles → Player Role Score → Similarity → Team
 Style Profile → Tactical Fit → API → frontend → resúmenes narrativos →
-multi-temporada → multi-competición.
+multi-temporada → multi-competición (5 ligas) → encaje táctico cross-liga
+(opt-in) → auditoría y ajuste de roles → entrenador (actual + temporada)
+y narrativa de estilo corregida.
 
 **Extensión futura consciente** (no olvidos — decisiones de "todavía no"):
 
 - **League Strength Coefficient** — para poder comparar jugadores de
   distintas competiciones (Segunda vs Primera, Bundesliga vs LaLiga) en un
   mismo ranking.
-- **Entrenador de la temporada en curso** — donde el flag `active` de
-  Sportmonks sí es fiable.
 - **Más ligas y temporadas** — el pipeline es multi-competición; añadir
   una liga es descargar su temporada y recalcular scoped.
 - **Potencial / desarrollo de jóvenes** — mencionado en el roadmap

@@ -16,6 +16,28 @@ function StyleBars({ axes }) {
   ))
 }
 
+// Fase 16: "actual" (active:true, HOY) vs "de la temporada mostrada"
+// (reconstruido por solape de fechas) — nunca se presentan como el mismo dato.
+function CoachInfo({ coach, seasonLabel }) {
+  if (!coach || !coach.current) return null
+  if (coach.same_as_current) {
+    return <p className="t-meta coach-line">Entrenador: {coach.current}</p>
+  }
+  const seasonChain = coach.season.map((s) => s.coach_name).join(' → ')
+  return (
+    <p className="t-meta coach-line">
+      Entrenador actual: {coach.current}
+      {coach.season.length > 0 ? (
+        <>
+          {' '}· Entrenador en {seasonLabel}: {seasonChain}
+        </>
+      ) : (
+        <> · Entrenador en {seasonLabel}: sin histórico fiable disponible</>
+      )}
+    </p>
+  )
+}
+
 export default function TeamProfile() {
   const { id } = useParams()
   const nav = useNavigate()
@@ -61,6 +83,7 @@ export default function TeamProfile() {
       {d && (
         <div style={{ marginTop: 18, maxWidth: 640 }}>
           <p className="player-summary">{d.narrative}</p>
+          <CoachInfo coach={d.coach} seasonLabel={d.season} />
 
           <div className="formation-group" style={{ borderTop: 0 }}>
             <div className="fg-head">

@@ -120,14 +120,29 @@ def player_role_summary(session: Session, player_id: int, *, season_id: int | No
 _HIGH = 70
 _LOW = 30
 
+# Fase 16 (investigación previa): `press_intensity` mide volumen de
+# entradas+intercepciones PROPIAS, que correlaciona fuerte y negativamente
+# con la posesión (si tienes el balón, el rival no lo tiene para que se lo
+# robes). En equipos de posesión extrema eso hunde el percentil de
+# press_intensity sin que signifique "pasividad defensiva" -- ver
+# Liverpool/Bayern/Napoli en docs/team_analysis_sample.md, donde salía
+# literalmente "hace pocas acciones defensivas" para equipos con pressing
+# reconocido. Por debajo de este umbral de posesión, press_intensity es la
+# única señal fiable sobre el volumen defensivo; por encima, es un eco de
+# la posesión y se omite de la frase (sigue disponible en la tabla de ejes
+# y en el Tactical Fit, donde el caveat ya estaba documentado).
+_SUPPRESS_PRESS_IF_POSSESSION_GE = 85
+
 # (eje) -> (frase si percentil ALTO, frase si percentil BAJO)
+# press_intensity: frases puramente descriptivas de volumen, sin el juicio
+# "activo/pasivo en defensa" que antes tenían (ver docs/DECISIONS.md).
 _AXIS_PHRASES = {
     "possession": ("domina la posesión", "juega la mayor parte del tiempo sin balón"),
     "pass_accuracy": ("circula el balón con mucha precisión", "tiene poca precisión de pase"),
     "crossing_frequency": ("ataca sobre todo por bandas, con muchos centros", "apenas centra al área"),
     "press_intensity": (
-        "es muy activo en acciones defensivas (entradas e intercepciones)",
-        "hace pocas acciones defensivas",
+        "hace muchas entradas e intercepciones por partido",
+        "hace pocas entradas e intercepciones por partido",
     ),
     "directness": ("juega directo, con mucho balón largo", "elabora desde atrás, con poco balón largo"),
 }
@@ -137,16 +152,25 @@ _AXIS_ORDER = ["possession", "pass_accuracy", "directness", "press_intensity", "
 
 def team_style_narrative(axes, team_name: str) -> str:
     """axes: iterable de dicts/objetos con .style_axis y .percentile.
-    Combina los 1-2 ejes más alejados del percentil 50."""
+    Combina los 1-2 ejes más alejados del percentil 50.
+
+    `press_intensity` se excluye de la frase (no de `axes`/la tabla de
+    ejes) cuando `possession` >= `_SUPPRESS_PRESS_IF_POSSESSION_GE`: en ese
+    régimen el eje es un eco de la posesión, no una señal de estilo propia
+    (ver la nota junto a `_SUPPRESS_PRESS_IF_POSSESSION_GE`)."""
     vals = {}
     for a in axes:
         axis = a["style_axis"] if isinstance(a, dict) else a.style_axis
         pct = float(a["percentile"] if isinstance(a, dict) else a.percentile)
         vals[axis] = pct
 
+    candidates = dict(vals)
+    if vals.get("possession", 0) >= _SUPPRESS_PRESS_IF_POSSESSION_GE:
+        candidates.pop("press_intensity", None)
+
     extremes = sorted(
-        (ax for ax, p in vals.items() if p >= _HIGH or p <= _LOW),
-        key=lambda ax: (-abs(vals[ax] - 50), _AXIS_ORDER.index(ax) if ax in _AXIS_ORDER else 99),
+        (ax for ax, p in candidates.items() if p >= _HIGH or p <= _LOW),
+        key=lambda ax: (-abs(candidates[ax] - 50), _AXIS_ORDER.index(ax) if ax in _AXIS_ORDER else 99),
     )[:2]
 
     if not extremes:

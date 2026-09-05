@@ -1751,3 +1751,85 @@ DLP 25/26 **95.49**, Barella AP Serie A **93.06**.
 strings), `frontend/src/smoke.test.jsx`, `README.md`, `docs/DECISIONS.md`
 (entrada), `docs/roles_fase4_mapping.md` + copia en data-experiment (nota),
 `docs/role_audit_top_bottom.md` (regenerado a 5 roles, sigue sin trackear).
+
+## 2026-09-05 — Fase 16: entrenador (actual + temporada) y narrativa de press_intensity corregida
+
+Implementa las 3 decisiones de la investigación previa
+(`docs/team_analysis_sample.md`). Detalle razonado en `docs/DECISIONS.md`
+(entrada 2026-09-05); aquí solo el resumen operativo.
+
+### Entrenador
+
+- `db/models.py`: `TeamCoach` (tabla `team_coaches`), grano por etapa como
+  `player_team_season`. `kind` = `current` (active:true, sin season_id) /
+  `season` (reconstruido por fechas, `season_id` obligatorio). Tabla nueva
+  vía `python -m db.create_schema` (aditivo, no tocó nada existente).
+- `loaders/etl_coaches.py` (nuevo): un único `/teams/{id}?include=coaches.coach`
+  por equipo (cacheado en `data-experiment/raw_data/sportmonks/coaches/`,
+  0 peticiones si ya está); de esa única respuesta se derivan `current` +
+  `season` para TODAS las temporadas que el equipo jugó (sin pedir por
+  temporada). Reconciliación de `season` con solapes múltiples: descarta
+  candidatos que contienen estrictamente a otro candidato solapante
+  (contratos de banquillo/asistente plurianuales) y funde etapas
+  consecutivas del mismo entrenador.
+- Carga real: **100 equipos, 0 sin `current`**, 114/120 pares
+  equipo-temporada con reconstrucción de `season` (156 filas), 6 sin
+  relación fiable (Union Berlin, Freiburg entre ellos) → sin forzar nada.
+  Coste: 100 peticiones `Team` (cuota 1999→1899 en el dry-run; la carga
+  real reusó el cache, 0 peticiones nuevas).
+- `api/services/teams.py::_team_coach_info` + `TeamCoachInfo` en
+  `TeamStyleResponse`: `current`, `season` (lista, puede ser cadena de
+  varias etapas), `same_as_current` (para no duplicar cuando coinciden).
+- Frontend: `TeamProfile.jsx` — "Entrenador: X" si coinciden; si no,
+  "Entrenador actual: X · Entrenador en {temporada}: Y" (o "Y → Z" en
+  cambios a media temporada), o "sin histórico fiable disponible" si
+  `season` viene vacío.
+
+### Narrativa — `press_intensity`
+
+- `analysis/narrative.py::team_style_narrative`: se omite `press_intensity`
+  de la frase cuando `possession >= 85` (constante
+  `_SUPPRESS_PRESS_IF_POSSESSION_GE`, documentada junto a la definición);
+  el eje sigue en la tabla de percentiles y en Tactical Fit, solo se quita
+  de la oración. Las dos frases del eje (alto/bajo) se reformularon a
+  "hace muchas/pocas entradas e intercepciones por partido" — factual, sin
+  el juicio "activo/pasivo en defensa".
+- Una sola función, sin duplicar: el fix se refleja igual en `/teams/{id}/style`,
+  `/scouting/tactical-fit` (`team_narrative`) y `/players/{id}/best-teams`
+  (`team_narrative` por equipo) — verificado con Liverpool en los tres.
+
+### Validación
+
+- Liverpool (posesión p92, press p2): *"domina la posesión y circula el
+  balón con mucha precisión"* — ya no dice "hace pocas acciones
+  defensivas", en los 3 sitios.
+- Napoli (p88/p2): *"elabora desde atrás… y domina la posesión"* — mismo
+  arreglo.
+- Bayern (p97/p3), Man City (p98/p18), Barça (p98/p32): sin cambio visible
+  (press ya no era el eje elegido), confirma que el umbral no toca lo que
+  ya funcionaba.
+- Control — Tottenham (p52, por debajo del umbral), Rayo Vallecano (p82,
+  por debajo), Werder Bremen, Alavés: `press_intensity` sigue en la frase,
+  con la redacción nueva ("hace muchas entradas e intercepciones…").
+- Coach: Liverpool → actual Iraola / temporada Slot (distintos, se
+  muestran los dos). Getafe → Bordalás en ambos (se muestra una vez).
+  Union Berlin → solo actual, `season: []`, sin forzar nada.
+- `npm test` **9/9** (nuevo: Liverpool sin "pocas acciones defensivas" +
+  las dos etiquetas de entrenador), build + lint limpios.
+
+### Documentos
+
+`docs/role_audit_top_bottom.md` y `docs/team_analysis_sample.md` — ya
+trackeados (eran investigación suelta de los dos prompts anteriores).
+`docs/fase11_coach_investigation.md` y `docs/roles_fase4_mapping.md`:
+banner de actualización apuntando a esta fase / a la Fase 15
+respectivamente, sin reescribir su contenido original.
+
+### Código
+
+`db/models.py` (+TeamCoach), `loaders/etl_coaches.py` (nuevo),
+`analysis/narrative.py`, `api/services/teams.py`, `api/schemas/teams.py`,
+`frontend/src/pages/TeamProfile.jsx`, `frontend/src/styles.css`,
+`frontend/src/smoke.test.jsx`, `README.md`, `docs/DECISIONS.md` (entrada),
+`docs/fase11_coach_investigation.md` + `docs/roles_fase4_mapping.md`
+(banners), `docs/README.md` (índice).

@@ -322,3 +322,95 @@ Giménez (dos vías real) 70.5 / 70.9, sin destacar en ninguno.
 
 **Actualiza** la entrada de `roles_fase4_mapping.md` sobre "Ball Playing
 CB": ese rol pasa a ser estos dos.
+
+---
+
+## 2026-09-05 — Se reabre el entrenador (Fase 11 se revierte, no se anula) + se corrige la narrativa de `press_intensity`
+
+**Estado:** aceptada.
+
+### Entrenador: `active: true` ya es fiable — la Fase 11 tenía razón entonces, no ahora
+
+La Fase 11 (2026-08-31) descartó persistir el entrenador: las fechas de
+tenencia de Sportmonks estaban rotas en los límites (Osasuna sin
+candidato, `end` antes del inicio de temporada). La Fase 16 repitió la
+comprobación (`docs/team_analysis_sample.md`, 18 equipos de las 5 ligas) y
+encontró que **eso ya no es cierto**: hay exactamente una relación
+`active: true` por equipo, con fechas coherentes.
+
+Lo que sí sigue siendo cierto: **`active` es el entrenador de HOY (temporada
+2026/27), no el de la temporada que muestran las estadísticas.** De 18
+equipos de la muestra, 11 tenían un entrenador distinto en 26/27
+(Liverpool: Iraola vs Slot; Real Madrid: Mourinho vs Xabi Alonso; Napoli:
+Allegri vs Conte…). Persistir solo `active` y llamarlo "el entrenador"
+habría sido tan engañoso como no tener el dato.
+
+**Decisión: dos vistas, nunca fusionadas.**
+
+- `kind='current'`: `active: true` tal cual, sin `season_id` (no depende
+  de qué temporada se esté mirando).
+- `kind='season'`: reconstruido por solape de fechas contra
+  `[seasons.start_date, seasons.end_date]` — viable ahora porque las
+  fechas ya no están rotas. **9 de 18 equipos de la muestra** salen con un
+  único entrenador limpio (Slot, Guardiola, Flick, Kompany, Bordalás…);
+  **~4/18** con un cambio a media temporada bien identificado; **~2/18**
+  sin ninguna relación que cubra la ventana (Union Berlin, Freiburg) → no
+  se fuerza nada, `season` queda vacío.
+
+**Esquema — `team_coaches`, grano por etapa.** Mismo principio que
+`player_team_season`: una fila por mandato, no una columna suelta, porque
+un equipo puede tener varios entrenadores en la misma temporada.
+`order_in_season` numera las etapas. `kind` distingue las dos vistas en la
+misma tabla (más simple que dos tablas, y `season_id` ya es NULL para
+`current` así que no hay ambigüedad). Es dato **ingerido** (se recarga
+desde `/teams/{id}?include=coaches.coach`, un endpoint por equipo — no
+hace falta pedir por temporada), no derivado de otras tablas de la BD.
+
+**Limitación conocida y verificada, no oculta: el filtro de "contención" puede tragarse un entrenador real.**
+Para reconstruir `season` con varios candidatos solapados se descartan los
+que **contienen estrictamente** el rango de otro candidato (así se
+eliminan contratos de banquillo/asistente de varios años que Sportmonks
+mezcla con las relaciones de primer entrenador — p. ej. "Bruno Saltor,
+Chelsea, 2022-09-08→2027-06-30" solapando con el mandato real de Maresca).
+Esto funciona bien en general, pero en **Tottenham** se comió también a
+**Thomas Frank** (2025-07-01→2028-06-30): Sportmonks no corrigió su fecha
+de fin cuando lo destituyeron en 2026, así que su rango contiene al
+interinato de Tudor que le sucedió, y el filtro lo trata igual que a un
+contrato fantasma. La cadena reconstruida para el Tottenham 25/26 queda
+"Tudor → Saltor → De Zerbi", sin Frank al principio. No hay una señal
+barata en el dato (`position_id` alterna 221/560 sin distinguir
+interino/titular) que permita corregir esto sin reglas por equipo, así
+que se documenta como límite conocido en vez de perseguirlo caso a caso.
+
+### Narrativa: `press_intensity` deja de mentir sobre los equipos de posesión extrema
+
+Diagnóstico (`docs/team_analysis_sample.md`): `press_intensity` = entradas
++ intercepciones **propias** por partido, y correlaciona fuerte y negativo
+con la posesión (con el balón, el rival no lo tiene para robárselo). La
+plantilla decía *"hace pocas acciones defensivas"* para el percentil bajo
+de ese eje — una afirmación de pasividad defensiva que resultaba **falsa**
+para equipos con pressing alto reconocido pero posesión elevada:
+Liverpool (posesión p92, press p2) y Napoli (posesión p88, press p2)
+salían descritos como defensivamente pasivos.
+
+**Umbral elegido: posesión ≥ p85 suprime `press_intensity` de la frase**
+(sigue en la tabla de ejes y en Tactical Fit, donde el caveat ya estaba
+documentado — solo se corrige la oración). Con los datos de la muestra:
+atrapa exactamente los casos con el problema (Liverpool p92, Napoli p88,
+Bayern p97, City p98, Barça p98) sin tocar los casos donde el eje sigue
+siendo información real — Rayo Vallecano (posesión p82, por debajo del
+umbral) sigue mostrando *"hace muchas entradas e intercepciones por
+partido"*, que es una lectura correcta de un equipo que presiona en bloque
+medio manteniendo el balón.
+
+**Además, las dos frases de `press_intensity` (alto y bajo) se
+reformularon a lenguaje puramente factual** — "hace muchas/pocas entradas
+e intercepciones por partido" en vez de "es muy activo / poco activo en
+acciones defensivas" — para no editorializar sobre "actividad defensiva"
+con una métrica que no distingue presión real de bloque bajo pasivo
+(Getafe y Tottenham comparten percentil alto en el eje por motivos
+opuestos).
+
+Cambio en una sola función (`analysis/narrative.py::team_style_narrative`),
+usada sin duplicar en las 3 vistas que muestran estilo de equipo (perfil,
+Tactical Fit, fit invertido).

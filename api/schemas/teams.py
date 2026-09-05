@@ -2,7 +2,30 @@
 
 from __future__ import annotations
 
+import datetime
+
 from pydantic import BaseModel, Field
+
+
+class CoachStint(BaseModel):
+    coach_name: str
+    start_date: datetime.date | None = None
+    end_date: datetime.date | None = None
+
+
+class TeamCoachInfo(BaseModel):
+    current: str | None = Field(
+        None, description="entrenador actual (active:true de Sportmonks) — HOY, no de la temporada mostrada"
+    )
+    season: list[CoachStint] = Field(
+        default_factory=list,
+        description="entrenador(es) de la temporada mostrada, reconstruidos por solape de fechas; "
+        "más de uno = cambio a mitad de temporada; vacío = sin relación fiable que cubra la ventana "
+        "(no se fuerza un dato dudoso)",
+    )
+    same_as_current: bool = Field(
+        False, description="true si el único entrenador de la temporada coincide con el actual (para no duplicar)"
+    )
 
 
 class TeamListItem(BaseModel):
@@ -42,6 +65,7 @@ class TeamStyleResponse(BaseModel):
     competition: str
     min_matches: int = Field(description="umbral de partidos por formación (Fase 7); por debajo no hay perfil de estilo")
     narrative: str = Field(description="descripción del estilo por reglas (Fase 11), sin LLM")
+    coach: TeamCoachInfo
     aggregate: TeamStyleProfile
     by_formation: list[TeamStyleProfile] = Field(
         description="una por cada formación con >= min_matches partidos"

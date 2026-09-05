@@ -20,11 +20,18 @@ Esquema pensado para:
     team_style_axes (percentiles de estilo precalculados). El
     tactical_fit en si es una funcion parametrizada bajo demanda
     (analysis/tactical_fit.py), NO una tabla.
+  - Fase 16: entrenador -> team_coaches. Grano por ETAPA de mandato, mismo
+    principio que player_team_season (multi-etapa) y no una columna suelta:
+    un equipo puede tener varios entrenadores en la misma temporada. `kind`
+    distingue "el de hoy" (`current`, sin season_id) de "el de la
+    temporada mostrada" (`season`, reconstruido por solape de fechas -
+    ver loaders/etl_coaches.py). Es dato INGERIDO (como el roster), no
+    derivado: se recarga desde la API, no se recalcula de otras tablas.
 
 Catalogos: competitions, seasons, teams, positions, stat_types, roles,
   role_buckets, role_weights, team_stat_types, role_style_weights.
 Entidades: players, player_team_season, player_statistics, team_fixtures,
-  team_fixture_statistics.
+  team_fixture_statistics, team_coaches.
 Derivado (Fase 3): player_percentiles.
 Derivado (Fase 5): player_role_scores, player_role_score_breakdown.
 Derivado (Fase 6): player_similarity.
@@ -78,6 +85,10 @@ STYLE_AXES = (
     "press_intensity", "directness",
 )
 STYLE_DIRECTIONS = ("positive", "negative")
+# Fase 16 - entrenador. 'current' = active:true de Sportmonks, sin season_id
+# (es "de hoy", no de una temporada concreta). 'season' = reconstruido por
+# solape de fechas contra [seasons.start_date, seasons.end_date].
+TEAM_COACH_KINDS = ("current", "season")
 
 
 # ---------------------------------------------------------------------------
@@ -716,3 +727,59 @@ class TeamStyleAxis(Base):
     )
 
     team: Mapped["Team"] = relationship()
+
+
+# ---------------------------------------------------------------------------
+# Fase 16 - Entrenador (investigado en Fase 11, descartado entonces; ver
+# docs/fase11_coach_investigation.md y docs/DECISIONS.md)
+# ---------------------------------------------------------------------------
+
+class TeamCoach(Base):
+    """Una ETAPA de mandato de un entrenador en un equipo.
+
+    Mismo principio que `player_team_season`: grano por etapa, no una
+    columna suelta, porque un equipo puede tener varios entrenadores en la
+    misma temporada (destituciones a mitad de curso). `order_in_season`
+    numera las etapas (0 = primera) dentro de un `(team_id, kind, season_id)`.
+
+    `kind = 'current'`: el entrenador `active: true` de Sportmonks HOY.
+    `season_id` es NULL (no está atado a una temporada concreta; se
+    recarga cada vez que se relanza el loader). Siempre 0 o 1 fila por
+    equipo.
+
+    `kind = 'season'`: reconstruido por solape de fechas contra
+    `[seasons.start_date, seasons.end_date]` de una temporada YA CARGADA
+    (ver `loaders/etl_coaches.py`). Puede haber 0 filas (sin relación de
+    Sportmonks fiable que cubra la ventana - no se fuerza un dato dudoso),
+    1 (mandato limpio) o varias (cambio a mitad de temporada).
+
+    Es dato INGERIDO, no derivado: no se recalcula de otras tablas, se
+    recarga desde la API (idempotente, DELETE scoped + INSERT).
+    """
+
+    __tablename__ = "team_coaches"
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id", "kind", "season_id", "order_in_season",
+            name="uq_team_coach",
+            postgresql_nulls_not_distinct=True,
+        ),
+        CheckConstraint(f"kind IN {TEAM_COACH_KINDS}", name="ck_team_coaches_kind"),
+        Index("ix_team_coaches_team", "team_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    team_id: Mapped[int] = mapped_column(ForeignKey("teams.id", ondelete="CASCADE"), nullable=False)
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    season_id: Mapped[Optional[int]] = mapped_column(ForeignKey("seasons.id"))
+    order_in_season: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sportmonks_coach_id: Mapped[Optional[int]] = mapped_column(Integer)
+    coach_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    start_date: Mapped[Optional[datetime.date]] = mapped_column(Date)
+    end_date: Mapped[Optional[datetime.date]] = mapped_column(Date)
+    computed_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    team: Mapped["Team"] = relationship()
+    season: Mapped[Optional["Season"]] = relationship()

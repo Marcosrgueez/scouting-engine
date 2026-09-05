@@ -59,6 +59,16 @@ test('equipo 25/26: narrativa + formaciones + muestra insuficiente (Atlético)',
   await waitFor(() => expect(screen.getByText(/muestra insuficiente/)).toBeDefined())
 })
 
+test('Liverpool (posesión + pressing): narrativa no lo pinta pasivo + entrenador actual vs temporada', async () => {
+  setSeason(9) // Premier League 2025/2026 (id interno)
+  mount('/teams/167', <Route path="/teams/:id" element={<TeamProfile />} />)
+  await waitFor(() => expect(screen.getByText(/El Liverpool/)).toBeDefined(), { timeout: 5000 })
+  expect(screen.queryByText(/pocas acciones defensivas/)).toBeNull()
+  expect(screen.queryByText(/es muy activo en acciones defensivas/)).toBeNull()
+  await waitFor(() => expect(screen.getByText(/Entrenador actual: Andoni Iraola/)).toBeDefined())
+  await waitFor(() => expect(screen.getByText(/Entrenador en 2025\/2026: Arne Slot/)).toBeDefined())
+})
+
 test('encaje táctico 24/25 preservado: Ball Winner en Dep. Alavés = Camavinga 92.3', async () => {
   setSeason(1) // LaLiga 2024/25 (id interno)
   const user = (await import('@testing-library/user-event')).default.setup()

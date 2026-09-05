@@ -14,10 +14,37 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from analysis.narrative import team_style_narrative
-from db.models import Season, Team, TeamFixture, TeamStyleAxis
+from db.models import Season, Team, TeamCoach, TeamFixture, TeamStyleAxis
 
 # umbral de partidos por formación de la Fase 7.
 STYLE_MIN_MATCHES = 5
+
+
+def _team_coach_info(db: Session, team_id: int, season_id: int) -> dict:
+    """Fase 16: entrenador actual (active:true, de hoy) + el/los de la
+    temporada mostrada (reconstruidos por solape de fechas). Si coinciden,
+    no se duplica el dato (`same_as_current`)."""
+    current = db.scalar(
+        select(TeamCoach).where(TeamCoach.team_id == team_id, TeamCoach.kind == "current")
+    )
+    season_rows = db.execute(
+        select(TeamCoach)
+        .where(TeamCoach.team_id == team_id, TeamCoach.kind == "season", TeamCoach.season_id == season_id)
+        .order_by(TeamCoach.order_in_season)
+    ).scalars().all()
+
+    season_list = [
+        {"coach_name": r.coach_name, "start_date": r.start_date, "end_date": r.end_date}
+        for r in season_rows
+    ]
+    same_as_current = (
+        current is not None and len(season_rows) == 1 and season_rows[0].coach_name == current.coach_name
+    )
+    return {
+        "current": current.coach_name if current else None,
+        "season": season_list,
+        "same_as_current": same_as_current,
+    }
 
 
 def list_teams(db: Session, season: Season) -> dict:
@@ -87,6 +114,7 @@ def get_team_style(db: Session, season: Season, team_id: int) -> dict:
         "competition": season.competition.name,
         "min_matches": STYLE_MIN_MATCHES,
         "narrative": team_style_narrative(aggregate["axes"], team.name),
+        "coach": _team_coach_info(db, team_id, season.id),
         "aggregate": aggregate,
         "by_formation": by_formation,
         "formations_below_threshold": formations_below,

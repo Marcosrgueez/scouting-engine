@@ -1,5 +1,7 @@
 > **Documento de metodología (archivado).** Registro de una investigación o decisión tomada durante el desarrollo. La validación de datos se hizo en un espacio de trabajo aparte (`data-experiment/`, no incluido en este repositorio); las rutas a `reports/`, `raw_data/` y `scripts/*.py` se refieren a ese espacio, no a este repo. Índice de docs: [`docs/README.md`](./README.md).
 
+> **Actualización 2026-09-05 (Fase 16).** La conclusión de este documento —no persistir el entrenador— se **revirtió**. Se reabrió porque `active: true` resultó fiable para "hoy", y con esas fechas coherentes la reconstrucción por temporada (sección de abajo, entonces bloqueada) también se volvió viable. Ver `DECISIONS.md`, entrada 2026-09-05, y `team_analysis_sample.md` para la muestra que lo confirmó.
+
 ---
 
 # Investigación — entrenador por equipo (Fase 11, punto 4)
